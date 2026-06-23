@@ -425,6 +425,10 @@ input:focus {
   border-color: var(--teal-bright);
 }
 
+input[type="checkbox"] {
+  accent-color: var(--teal-dark);
+}
+
 textarea:focus {
   outline: 2px solid rgba(17, 141, 150, 0.28);
   border-color: var(--teal-bright);
@@ -614,6 +618,11 @@ textarea:focus {
 
 .admin-intro {
   grid-template-columns: 6px minmax(0, 1fr) auto;
+}
+
+.admin-intro h1 {
+  max-width: 720px;
+  font-size: clamp(34px, 4vw, 48px);
 }
 
 .admin-actions,
