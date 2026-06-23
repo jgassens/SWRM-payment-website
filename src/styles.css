@@ -112,7 +112,7 @@ button:disabled {
 
 .masthead-inner {
   width: min(1180px, calc(100% - 40px));
-  min-height: 232px;
+  min-height: 164px;
   margin: 0 auto;
   display: grid;
   grid-template-columns: 1fr auto 1fr;
@@ -121,7 +121,7 @@ button:disabled {
 }
 
 .conference-logo {
-  width: 245px;
+  width: 190px;
   max-width: 42vw;
   height: auto;
   display: block;
@@ -143,7 +143,7 @@ button:disabled {
 .page {
   width: min(1180px, calc(100% - 40px));
   margin: 0 auto;
-  padding: 56px 0 72px;
+  padding: 42px 0 72px;
 }
 
 .intro-panel {
@@ -151,8 +151,8 @@ button:disabled {
   grid-template-columns: 6px minmax(0, 1fr) auto;
   gap: 28px;
   align-items: stretch;
-  padding: 38px 40px;
-  margin-bottom: 44px;
+  padding: 32px 36px;
+  margin-bottom: 32px;
   background: var(--panel);
   box-shadow: var(--shadow);
 }
@@ -266,6 +266,149 @@ h3 {
   text-align: right;
 }
 
+.booth-step,
+.addon-menu {
+  padding: 28px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+}
+
+.booth-step {
+  margin-bottom: 20px;
+}
+
+.booth-options-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.booth-card {
+  min-height: 226px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-left: 5px solid transparent;
+  border-radius: 6px;
+  background: #fbfcfc;
+  color: var(--ink);
+  text-align: left;
+  transition:
+    border-color 160ms ease,
+    background-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
+}
+
+.booth-card:hover:not(:disabled),
+.booth-card:focus-visible:not(:disabled) {
+  border-color: rgba(17, 141, 150, 0.42);
+  border-left-color: var(--teal-bright);
+  background: #ffffff;
+  box-shadow: 0 12px 28px rgba(11, 91, 97, 0.12);
+  transform: translateY(-1px);
+}
+
+.booth-card.selected {
+  border-color: var(--teal-dark);
+  border-left-color: var(--teal-dark);
+  background: #edf7f8;
+  box-shadow: 0 12px 30px rgba(11, 91, 97, 0.16);
+}
+
+.booth-card-title {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--ink);
+  font-family: "Cabin Local", "Lato Local", Arial, sans-serif;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.14;
+}
+
+.booth-card .summary {
+  display: block;
+  margin-bottom: 16px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.42;
+}
+
+.booth-benefits {
+  display: grid;
+  gap: 7px;
+  margin-top: auto;
+  padding-top: 14px;
+  border-top: 1px solid #dfe7e7;
+}
+
+.booth-benefits span {
+  position: relative;
+  display: block;
+  padding-left: 15px;
+  color: #3e4648;
+  font-size: 13px;
+  line-height: 1.32;
+}
+
+.booth-benefits span::before {
+  content: "";
+  position: absolute;
+  top: 0.58em;
+  left: 0;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--teal-bright);
+}
+
+.addon-menu {
+  scroll-margin-top: 24px;
+}
+
+.addon-menu.locked {
+  background:
+    linear-gradient(180deg, rgba(237, 247, 248, 0.72), rgba(255, 255, 255, 0.92)),
+    var(--panel);
+}
+
+.addon-pitch {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: 18px;
+  align-items: center;
+  margin-bottom: 18px;
+  padding: 18px 20px;
+  border-left: 5px solid var(--gold);
+  background: #f5f1e5;
+}
+
+.addon-pitch strong {
+  color: var(--teal-dark);
+  font-family: "Cabin Local", "Lato Local", Arial, sans-serif;
+  font-size: 20px;
+  line-height: 1.16;
+}
+
+.addon-pitch span {
+  color: #4e5658;
+  font-size: 15px;
+}
+
+.locked-callout {
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border: 1px solid rgba(17, 141, 150, 0.28);
+  border-radius: 4px;
+  background: rgba(237, 247, 248, 0.86);
+  color: var(--teal-dark);
+  font-size: 14px;
+  font-weight: 700;
+}
+
 .category-tabs {
   display: flex;
   gap: 8px;
@@ -290,6 +433,10 @@ h3 {
   border-color: var(--teal-dark);
   background: var(--teal-dark);
   color: white;
+}
+
+.tab:disabled {
+  opacity: 0.62;
 }
 
 .package-grid {
@@ -438,6 +585,31 @@ textarea:focus {
   margin-top: 24px;
   padding-top: 20px;
   border-top: 1px solid var(--line);
+}
+
+.booth-summary {
+  display: grid;
+  gap: 4px;
+  margin-top: 18px;
+  padding: 14px 16px;
+  border: 1px solid rgba(17, 141, 150, 0.24);
+  border-left: 5px solid var(--teal-bright);
+  border-radius: 4px;
+  background: #edf7f8;
+}
+
+.booth-summary span {
+  color: var(--teal-dark);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.booth-summary strong {
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.28;
 }
 
 .cart-heading,
@@ -760,6 +932,10 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 
+  .booth-options-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .admin-command-row {
     justify-content: flex-start;
   }
@@ -795,7 +971,7 @@ textarea:focus {
 
   .masthead-inner {
     width: min(100% - 28px, 1180px);
-    min-height: 190px;
+    min-height: 158px;
     grid-template-columns: 1fr;
     justify-items: center;
     gap: 14px;
@@ -818,11 +994,22 @@ textarea:focus {
   }
 
   .intro-facts,
+  .booth-options-grid,
   .package-grid,
   .form-grid,
   .admin-form-grid,
   .reservation-row {
     grid-template-columns: 1fr;
+  }
+
+  .booth-step,
+  .addon-menu {
+    padding: 22px;
+  }
+
+  .addon-pitch {
+    grid-template-columns: 1fr;
+    gap: 8px;
   }
 
   .section-heading {

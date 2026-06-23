@@ -5,6 +5,16 @@ import { categories, formatCurrency, packages as fallbackPackages, withInventory
 
 const appBase = import.meta.env.BASE_URL || "/";
 const logoUrl = `${appBase}assets/swrm-logo.webp`;
+const noBoothChoiceId = "no-booth";
+const menuCategoryIds = ["tiers", "programming", "digital", "meals", "branded", "student"];
+const recommendedPackageIds = [
+  "meals-coffee-break",
+  "branded-lanyards",
+  "meals-opening-reception",
+  "student-poster-prize",
+  "digital-wifi",
+  "branded-full-ad"
+];
 
 const initialVendor = {
   organization: "",
@@ -36,7 +46,8 @@ export default function App() {
 }
 
 function Storefront() {
-  const [activeCategory, setActiveCategory] = useState("tiers");
+  const [activeCategory, setActiveCategory] = useState("recommended");
+  const [selectedBoothPath, setSelectedBoothPath] = useState(null);
   const [catalog, setCatalog] = useState(() => fallbackPackages.map(withInventoryDefaults));
   const [catalogState, setCatalogState] = useState({ status: "loading", message: "" });
   const [cart, setCart] = useState([]);
@@ -68,8 +79,30 @@ function Storefront() {
   }, []);
 
   const catalogById = useMemo(() => new Map(catalog.map((item) => [item.id, item])), [catalog]);
+  const boothPackages = useMemo(
+    () => catalog.filter((item) => item.category === "booths" && item.active !== false),
+    [catalog]
+  );
+  const menuCategories = useMemo(
+    () => [
+      { id: "recommended", label: "Recommended" },
+      ...categories.filter((category) => menuCategoryIds.includes(category.id))
+    ],
+    []
+  );
   const visiblePackages = useMemo(
-    () => catalog.filter((item) => item.category === activeCategory && item.active !== false),
+    () => {
+      const activePackages = catalog.filter((item) => item.active !== false);
+      if (activeCategory === "recommended") {
+        const recommended = recommendedPackageIds
+          .map((id) => activePackages.find((item) => item.id === id))
+          .filter(Boolean);
+        return recommended.length > 0
+          ? recommended
+          : activePackages.filter((item) => menuCategoryIds.includes(item.category)).slice(0, 6);
+      }
+      return activePackages.filter((item) => item.category === activeCategory);
+    },
     [activeCategory, catalog]
   );
   const cartLines = useMemo(
@@ -82,39 +115,70 @@ function Storefront() {
         .filter(Boolean),
     [cart, catalogById]
   );
+  const selectedBoothItem =
+    selectedBoothPath && selectedBoothPath !== noBoothChoiceId
+      ? catalogById.get(selectedBoothPath)
+      : null;
+  const hasBoothPath = Boolean(selectedBoothPath);
   const total = cartLines.reduce((sum, line) => sum + line.item.price * line.quantity, 0);
+  const cartCount = cartLines.reduce((sum, line) => sum + line.quantity, 0);
 
-  function addToCart(itemId) {
+  function addToCart(itemId, options = {}) {
     const item = catalogById.get(itemId);
     if (!item || isSoldOut(item)) return;
 
     setCart((lines) => {
-      const existing = lines.find((line) => line.id === itemId);
+      const scopedLines = options.replaceBooth
+        ? lines.filter((line) => catalogById.get(line.id)?.category !== "booths")
+        : lines;
+      const existing = scopedLines.find((line) => line.id === itemId);
       const maxQuantity = maxQuantityFor(item);
       if (existing) {
-        return lines.map((line) =>
+        return scopedLines.map((line) =>
           line.id === itemId
             ? { ...line, quantity: Math.min(maxQuantity, line.quantity + 1) }
             : line
         );
       }
-      return [...lines, { id: itemId, quantity: 1 }];
+      return [...scopedLines, { id: itemId, quantity: 1 }];
+    });
+  }
+
+  function chooseBoothPath(choiceId) {
+    setSelectedBoothPath(choiceId);
+    if (choiceId === noBoothChoiceId) {
+      setCart((lines) => lines.filter((line) => catalogById.get(line.id)?.category !== "booths"));
+      scrollToSponsorMenu();
+      return;
+    }
+    addToCart(choiceId, { replaceBooth: true });
+    scrollToSponsorMenu();
+  }
+
+  function scrollToSponsorMenu() {
+    window.requestAnimationFrame(() => {
+      document.getElementById("sponsorship-menu")?.scrollIntoView({
+        behavior: "smooth",
+        block: "start"
+      });
     });
   }
 
   function updateQuantity(itemId, change) {
     const item = catalogById.get(itemId);
     const maxQuantity = item ? maxQuantityFor(item) : 99;
+    const nextLines = cart
+      .map((line) =>
+        line.id === itemId
+          ? { ...line, quantity: Math.max(0, Math.min(maxQuantity, line.quantity + change)) }
+          : line
+      )
+      .filter((line) => line.quantity > 0);
 
-    setCart((lines) =>
-      lines
-        .map((line) =>
-          line.id === itemId
-            ? { ...line, quantity: Math.max(0, Math.min(maxQuantity, line.quantity + change)) }
-            : line
-        )
-        .filter((line) => line.quantity > 0)
-    );
+    setCart(nextLines);
+    if (selectedBoothPath === itemId && !nextLines.some((line) => line.id === itemId)) {
+      setSelectedBoothPath(noBoothChoiceId);
+    }
   }
 
   function updateVendor(field, value) {
@@ -142,34 +206,69 @@ function Storefront() {
 
   return (
     <div className="app-shell">
-      <ConferenceHeader cartCount={cartLines.length} />
+      <ConferenceHeader cartCount={cartCount} />
       <main className="page">
         <IntroBlock />
 
         <section className="commerce-grid" aria-label="SWRM sponsorship checkout">
           <div className="catalog-column">
-            <div className="section-heading">
-              <div>
-                <p className="section-label">Tailor your investment</p>
-                <h2>Sponsorship tiers and a la carte exposure</h2>
-              </div>
-              <p className="deadline-note">
-                Logos and ad copy due September 15, 2026.
-              </p>
-            </div>
-
-            <CategoryTabs
-              activeCategory={activeCategory}
-              onChange={setActiveCategory}
+            <BoothPathStep
+              boothPackages={boothPackages}
+              selectedBoothPath={selectedBoothPath}
+              onChoose={chooseBoothPath}
             />
 
-            {catalogState.message ? <p className="checkout-note">{catalogState.message}</p> : null}
+            <section
+              id="sponsorship-menu"
+              className={hasBoothPath ? "addon-menu" : "addon-menu locked"}
+              aria-label="Sponsorship add-on menu"
+            >
+              <div className="section-heading">
+                <div>
+                  <p className="section-label">Step 2: build brand awareness</p>
+                  <h2>Add sponsorship moments across the meeting</h2>
+                </div>
+                <p className="deadline-note">
+                  Support ACS programming while putting your logo in the attendee path.
+                </p>
+              </div>
 
-            <div className="package-grid">
-              {visiblePackages.map((item) => (
-                <PackageCard key={item.id} item={item} onAdd={addToCart} />
-              ))}
-            </div>
+              <div className="addon-pitch">
+                <strong>High-traffic options make the booth choice work harder.</strong>
+                <span>
+                  Coffee breaks, lanyards, speaker sessions, ads, and student awards turn
+                  simple vendor registration into visible support for the chemistry community.
+                </span>
+              </div>
+
+              <CategoryTabs
+                activeCategory={activeCategory}
+                onChange={setActiveCategory}
+                categoriesToShow={menuCategories}
+                disabled={!hasBoothPath}
+              />
+
+              {catalogState.message ? <p className="checkout-note">{catalogState.message}</p> : null}
+
+              {!hasBoothPath ? (
+                <div className="locked-callout">
+                  Choose a booth path above to open the sponsorship menu. The recommended
+                  add-ons are already visible here so vendors see the brand-building options
+                  before checkout.
+                </div>
+              ) : null}
+
+              <div className="package-grid">
+                {visiblePackages.map((item) => (
+                  <PackageCard
+                    key={item.id}
+                    item={item}
+                    onAdd={addToCart}
+                    disabled={!hasBoothPath}
+                  />
+                ))}
+              </div>
+            </section>
           </div>
 
           <CartPanel
@@ -180,6 +279,9 @@ function Storefront() {
             onQuantityChange={updateQuantity}
             onCheckout={startCheckout}
             checkoutState={checkoutState}
+            hasBoothPath={hasBoothPath}
+            selectedBoothPath={selectedBoothPath}
+            selectedBoothItem={selectedBoothItem}
           />
         </section>
 
@@ -222,10 +324,9 @@ function IntroBlock() {
         <p className="section-label">American Chemical Society Southwest Regional Meeting</p>
         <h1>SWRM 2026 Sponsorship Portal</h1>
         <p>
-          Chemistry at the Intersection of Energy, Sustainability, and Biology.
-          Sponsor visibility, exhibitor booths, branded attendee items, and
-          student support opportunities are available for the November 16-19,
-          2026 meeting in downtown Fort Worth.
+          Start with your exhibit footprint, then add high-visibility sponsorship moments
+          that support ACS programming and keep your brand in front of regional chemists
+          throughout the November 16-19 meeting in downtown Fort Worth.
         </p>
       </div>
       <div className="intro-facts">
@@ -246,16 +347,78 @@ function Fact({ value, label }) {
   );
 }
 
-function CategoryTabs({ activeCategory, onChange }) {
+function BoothPathStep({ boothPackages, selectedBoothPath, onChoose }) {
+  const noBoothChoice = {
+    id: noBoothChoiceId,
+    name: "No booth, just logo visibility and sponsorship add-ons",
+    price: 0,
+    availability: "sponsorship only",
+    summary:
+      "Skip exhibit space and support SWRM through coffee breaks, branded items, ads, student awards, or other recognition.",
+    included: [
+      "Best for remote vendors, institutions, and community supporters",
+      "Opens the same add-on sponsorship menu"
+    ]
+  };
+  const choices = [...boothPackages, noBoothChoice];
+
+  return (
+    <section className="booth-step" aria-label="Choose a booth path">
+      <div className="section-heading">
+        <div>
+          <p className="section-label">Step 1: booth path</p>
+          <h2>Start with your exhibit footprint</h2>
+        </div>
+        <p className="deadline-note">
+          Booth sales and logo materials are due September 15, 2026.
+        </p>
+      </div>
+
+      <div className="booth-options-grid">
+        {choices.map((item) => {
+          const selected = selectedBoothPath === item.id;
+          const soldOut = item.id !== noBoothChoiceId && isSoldOut(item);
+
+          return (
+            <button
+              key={item.id}
+              type="button"
+              className={selected ? "booth-card selected" : "booth-card"}
+              onClick={() => onChoose(item.id)}
+              disabled={soldOut}
+              aria-pressed={selected}
+            >
+              <span className="card-topline">
+                <span>{item.id === noBoothChoiceId ? item.availability : inventoryLabel(item)}</span>
+                <span>{item.price === 0 ? "No booth" : formatCurrency(item.price)}</span>
+              </span>
+              <span className="booth-card-title">{item.name}</span>
+              {item.label ? <span className="item-label">{item.label}</span> : null}
+              <span className="summary">{item.summary}</span>
+              <span className="booth-benefits">
+                {item.included.slice(0, 2).map((benefit) => (
+                  <span key={benefit}>{benefit}</span>
+                ))}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function CategoryTabs({ activeCategory, onChange, categoriesToShow = categories, disabled = false }) {
   return (
     <div id="packages" className="category-tabs" role="tablist" aria-label="Package categories">
-      {categories.map((category) => (
+      {categoriesToShow.map((category) => (
         <button
           key={category.id}
           className={category.id === activeCategory ? "tab active" : "tab"}
           type="button"
           role="tab"
           aria-selected={category.id === activeCategory}
+          disabled={disabled}
           onClick={() => onChange(category.id)}
         >
           {category.label}
@@ -265,11 +428,15 @@ function CategoryTabs({ activeCategory, onChange }) {
   );
 }
 
-function PackageCard({ item, onAdd }) {
+function PackageCard({ item, onAdd, disabled = false }) {
   const soldOut = isSoldOut(item);
+  const cannotAdd = disabled || soldOut;
 
   return (
-    <article className={soldOut ? "package-card sold-out" : "package-card"} data-testid={`package-${item.id}`}>
+    <article
+      className={cannotAdd ? "package-card sold-out" : "package-card"}
+      data-testid={`package-${item.id}`}
+    >
       <div className="card-topline">
         <span>{inventoryLabel(item)}</span>
         <span>{formatCurrency(item.price)}</span>
@@ -287,9 +454,9 @@ function PackageCard({ item, onAdd }) {
         className="outline-button"
         data-testid={`add-${item.id}`}
         onClick={() => onAdd(item.id)}
-        disabled={soldOut}
+        disabled={cannotAdd}
       >
-        {soldOut ? "Sold out" : "Add"}
+        {soldOut ? "Sold out" : disabled ? "Pick booth path" : "Add"}
       </button>
     </article>
   );
@@ -302,9 +469,14 @@ function CartPanel({
   total,
   onQuantityChange,
   onCheckout,
-  checkoutState
+  checkoutState,
+  hasBoothPath,
+  selectedBoothPath,
+  selectedBoothItem
 }) {
+  const cartItemCount = cartLines.reduce((sum, line) => sum + line.quantity, 0);
   const canCheckout =
+    hasBoothPath &&
     cartLines.length > 0 &&
     vendor.organization.trim() &&
     vendor.contactName.trim() &&
@@ -362,10 +534,21 @@ function CartPanel({
         </label>
       </div>
 
+      <div className="booth-summary">
+        <span>Booth path</span>
+        <strong>
+          {selectedBoothPath === noBoothChoiceId
+            ? "No booth, sponsorship add-ons only"
+            : selectedBoothItem?.name || "Choose booth path first"}
+        </strong>
+      </div>
+
       <div className="cart-block">
         <div className="cart-heading">
           <h3>Cart</h3>
-          <span>{cartLines.length} items</span>
+          <span>
+            {cartItemCount} {cartItemCount === 1 ? "item" : "items"}
+          </span>
         </div>
 
         {cartLines.length === 0 ? (
@@ -411,6 +594,8 @@ function CartPanel({
         <p className={checkoutState.status === "error" ? "checkout-error" : "checkout-note"}>
           {checkoutState.message}
         </p>
+      ) : !hasBoothPath ? (
+        <p className="checkout-note">Choose a booth path before checkout opens.</p>
       ) : null}
     </aside>
   );
