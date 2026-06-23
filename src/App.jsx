@@ -222,11 +222,6 @@ function Storefront({ isDemoMode }) {
     });
   }
 
-  function exitDemoMode() {
-    clearDemoSandbox();
-    window.location.href = appBase;
-  }
-
   async function startCheckout() {
     if (isDemoMode) {
       setCheckoutState({ status: "loading", message: "Simulating Stripe Checkout..." });
@@ -281,7 +276,6 @@ function Storefront({ isDemoMode }) {
         <DemoModePanel
           isDemoMode={isDemoMode}
           onReset={resetDemoInventory}
-          onExit={exitDemoMode}
         />
 
         <section className="commerce-grid" aria-label="SWRM sponsorship checkout">
@@ -394,7 +388,7 @@ function ConferenceHeader({ cartCount, admin = false, isDemoMode = false }) {
   );
 }
 
-function DemoModePanel({ isDemoMode, onReset, onExit }) {
+function DemoModePanel({ isDemoMode, onReset }) {
   if (!isDemoMode) {
     return (
       <section className="demo-panel" aria-label="Demo checkout mode">
@@ -426,9 +420,6 @@ function DemoModePanel({ isDemoMode, onReset, onExit }) {
       <div className="demo-actions">
         <button type="button" className="outline-button demo-action" onClick={onReset}>
           Reset demo
-        </button>
-        <button type="button" className="outline-button demo-action" onClick={onExit}>
-          Exit demo
         </button>
       </div>
     </section>
@@ -781,11 +772,6 @@ function CheckoutResult({ status, isDemoMode = false }) {
     window.location.href = `${appBase}?demo=1`;
   }
 
-  function exitDemoAndReturn() {
-    clearDemoSandbox();
-    window.location.href = appBase;
-  }
-
   return (
     <div className="app-shell result-shell">
       <ConferenceHeader cartCount={0} isDemoMode={isDemoCheckout} />
@@ -850,14 +836,9 @@ function CheckoutResult({ status, isDemoMode = false }) {
                 {isDemoCheckout ? "Back to demo portal" : "Back to portal"}
               </a>
               {isDemoCheckout ? (
-                <>
-                  <button type="button" className="outline-button result-link" onClick={resetDemoAndReturn}>
-                    Reset demo
-                  </button>
-                  <button type="button" className="outline-button result-link" onClick={exitDemoAndReturn}>
-                    Exit demo
-                  </button>
-                </>
+                <button type="button" className="outline-button result-link" onClick={resetDemoAndReturn}>
+                  Reset demo
+                </button>
               ) : null}
             </div>
           </div>
