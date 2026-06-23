@@ -11,6 +11,10 @@ const stripeSecret = process.env.STRIPE_SECRET_KEY;
 const stripe = stripeSecret
   ? new Stripe(stripeSecret, { apiVersion: "2026-02-25.clover" })
   : null;
+const demoStripeSecret = resolveDemoStripeSecret(process.env);
+const demoStripe = isStripeTestSecret(demoStripeSecret)
+  ? new Stripe(demoStripeSecret, { apiVersion: "2026-02-25.clover" })
+  : null;
 
 app.use(express.json({ limit: "1mb" }));
 
@@ -18,6 +22,7 @@ app.get("/api/health", (_req, res) => {
   res.json({
     ok: true,
     stripeMode: stripe ? "checkout" : "mock",
+    stripeDemoMode: demoStripe ? "test-checkout" : "missing-test-secret",
     catalogMode: "static"
   });
 });
@@ -101,6 +106,81 @@ app.post("/api/create-checkout-session", async (req, res) => {
   }
 });
 
+app.post("/api/create-demo-checkout-session", async (req, res) => {
+  try {
+    const { cart, vendor, demoOrderId } = req.body || {};
+    const items = normalizeCart(cart);
+    const cleanVendor = normalizeVendor(vendor);
+
+    if (items.length === 0) {
+      return res.status(400).json({ error: "Select at least one sponsorship item." });
+    }
+
+    if (!cleanVendor.organization || !cleanVendor.contactName || !cleanVendor.email) {
+      return res.status(400).json({
+        error: "Organization, contact name, and email are required before checkout."
+      });
+    }
+
+    if (!demoStripe) {
+      return res.status(503).json({
+        error: "Stripe demo checkout needs a test-mode Stripe secret key."
+      });
+    }
+
+    const orderId = clean(demoOrderId).slice(0, 120) || `demo_${Date.now().toString(36)}`;
+    const encodedOrderId = encodeURIComponent(orderId);
+    const origin = process.env.PUBLIC_APP_URL || `${req.protocol}://${req.get("host")}`;
+    const session = await demoStripe.checkout.sessions.create({
+      mode: "payment",
+      customer_email: cleanVendor.email,
+      payment_intent_data: {
+        receipt_email: cleanVendor.email
+      },
+      invoice_creation: {
+        enabled: true
+      },
+      client_reference_id: orderId,
+      line_items: items.map(({ item, quantity }) => ({
+        quantity,
+        price_data: {
+          currency: "usd",
+          unit_amount: item.price * 100,
+          product_data: {
+            name: `SWRM 2026 - ${item.name}`,
+            description: item.summary.slice(0, 300),
+            metadata: {
+              package_id: item.id,
+              category: item.category
+            }
+          }
+        }
+      })),
+      metadata: {
+        reservation_id: orderId,
+        checkout_mode: "demo",
+        organization: cleanVendor.organization,
+        contact_name: cleanVendor.contactName,
+        phone: cleanVendor.phone || "",
+        website: cleanVendor.website || "",
+        package_summary: items
+          .map(({ item, quantity }) => `${quantity}x ${item.name}`)
+          .join("; ")
+          .slice(0, 500)
+      },
+      success_url: `${origin}/?checkout=success&demo=1&stripe_demo=1&demo_order=${encodedOrderId}&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${origin}/?checkout=cancel&demo=1&stripe_demo=1&demo_order=${encodedOrderId}`
+    });
+
+    return res.json({ mode: "demo-checkout", url: session.url });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({
+      error: "Demo checkout could not be started. Please review the cart and try again."
+    });
+  }
+});
+
 if (isProduction) {
   app.use(express.static("dist"));
   app.use((req, res, next) => {
@@ -151,6 +231,18 @@ function normalizeVendor(vendor = {}) {
 
 function clean(value) {
   return String(value || "").trim().slice(0, 500);
+}
+
+function isStripeTestSecret(value) {
+  return String(value || "").trim().startsWith("sk_test_");
+}
+
+function resolveDemoStripeSecret(env) {
+  const dedicatedDemoSecret = String(env.STRIPE_DEMO_SECRET_KEY || "").trim();
+  if (isStripeTestSecret(dedicatedDemoSecret)) return dedicatedDemoSecret;
+
+  const configuredCheckoutSecret = String(env.STRIPE_SECRET_KEY || "").trim();
+  return isStripeTestSecret(configuredCheckoutSecret) ? configuredCheckoutSecret : "";
 }
 
 export function summarizeOrder(items) {

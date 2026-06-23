@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import AdminApp from "./Admin.jsx";
-import { apiUrl, checkoutEndpoint, readJson } from "./api.js";
+import { apiUrl, checkoutEndpoint, demoCheckoutEndpoint, readJson } from "./api.js";
 import { categories, formatCurrency, packages as fallbackPackages, withInventoryDefaults } from "./catalog.js";
 
 const appBase = import.meta.env.BASE_URL || "/";
@@ -26,7 +26,9 @@ const initialVendor = {
 };
 const demoInventoryStorageKey = "swrm-demo-inventory-v1";
 const demoOrderStorageKey = "swrm-demo-last-order-v1";
+const pendingDemoOrderStorageKey = "swrm-demo-pending-order-v1";
 const demoOrdersStorageKey = "swrm-demo-orders-v1";
+const completedDemoOrderIdsStorageKey = "swrm-demo-completed-order-ids-v1";
 
 export default function App() {
   const currentRoute = window.location.pathname;
@@ -225,24 +227,31 @@ function Storefront({ isDemoMode }) {
 
   async function startCheckout() {
     if (isDemoMode) {
-      setCheckoutState({ status: "loading", message: "Simulating Stripe Checkout..." });
+      setCheckoutState({ status: "loading", message: "Opening Stripe test Checkout..." });
 
       try {
         const currentInventory = ensureDemoInventory(
           baseCatalog,
           demoInventory || readStoredDemoInventory()
         );
-        const nextInventory = reserveDemoInventory(currentInventory, cartLines);
+        reserveDemoInventory(currentInventory, cartLines);
         const demoOrder = createDemoOrder({ cartLines, total, vendor });
-        writeStoredDemoInventory(nextInventory);
-        writeStoredDemoOrder(demoOrder);
-        setDemoInventory(nextInventory);
-        window.setTimeout(() => {
-          window.location.href = `${appBase}?checkout=success&demo=1&demo_order=${encodeURIComponent(
-            demoOrder.id
-          )}`;
-        }, 450);
+        writePendingDemoOrder(demoOrder);
+
+        const response = await fetch(demoCheckoutEndpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cart, vendor, demoOrderId: demoOrder.id })
+        });
+        const data = await readJson(response);
+
+        if (!data.url) {
+          throw new Error("Stripe did not return a demo Checkout URL.");
+        }
+
+        window.location.href = data.url;
       } catch (error) {
+        clearPendingDemoOrder();
         setCheckoutState({
           status: "error",
           message: error.message || "Demo checkout could not be completed."
@@ -395,10 +404,10 @@ function DemoModePanel({ isDemoMode, onReset }) {
       <section className="demo-panel" aria-label="Demo checkout mode">
         <div>
           <p className="section-label">Demo mode</p>
-          <strong>Test the full purchase flow without touching Stripe or live inventory.</strong>
+          <strong>Test the full purchase flow without touching live payments or inventory.</strong>
           <span>
-            Demo mode uses the current catalog, simulates checkout, and keeps inventory changes
-            only in this browser until it is reset or turned off.
+            Demo mode uses the current catalog, opens Stripe test checkout, and keeps inventory
+            changes only in this browser until it is reset.
           </span>
         </div>
         <a className="outline-button demo-action" href={`${appBase}?demo=1`}>
@@ -412,10 +421,11 @@ function DemoModePanel({ isDemoMode, onReset }) {
     <section className="demo-panel active-demo" aria-label="Demo checkout mode is active">
       <div>
         <p className="section-label">Demo mode active</p>
-        <strong>Checkout is simulated; real Stripe and live inventory stay untouched.</strong>
+        <strong>Checkout uses Stripe test mode; real payments and live inventory stay untouched.</strong>
         <span>
           This sandbox starts from the live catalog and reduces only temporary inventory in this
-          browser, so you can confirm the buying flow behaves like the real one.
+          browser after test checkout succeeds, so you can confirm the buying flow behaves like
+          the real one.
         </span>
       </div>
       <div className="demo-actions">
@@ -709,7 +719,7 @@ function CartPanel({
       >
         {checkoutState.status === "loading"
           ? isDemoMode
-            ? "Simulating checkout..."
+            ? "Opening test checkout..."
             : "Creating checkout..."
           : isDemoMode
             ? "Run demo checkout"
@@ -724,8 +734,8 @@ function CartPanel({
         <p className="checkout-note">Choose a booth path before checkout opens.</p>
       ) : isDemoMode ? (
         <p className="checkout-note">
-          Demo checkout will simulate Stripe, capture vendor registration, and adjust only this
-          browser's temporary inventory.
+          Demo checkout opens Stripe test mode, captures vendor registration, and adjusts only
+          this browser's temporary inventory after the test payment succeeds.
         </p>
       ) : null}
     </aside>
@@ -766,7 +776,19 @@ function CheckoutResult({ status, isDemoMode = false }) {
   const isMock = params.get("mock") === "1";
   const isDemoCheckout = isDemoMode || isMock;
   const isSuccess = status === "success";
-  const demoOrder = isDemoCheckout ? readStoredDemoOrder() : null;
+  const [demoOrder, setDemoOrder] = useState(() =>
+    isDemoCheckout ? readStoredDemoOrder() || readPendingDemoOrder() : null
+  );
+
+  useEffect(() => {
+    if (!isDemoCheckout) return;
+    if (!isSuccess) {
+      clearPendingDemoOrder();
+      return;
+    }
+    const finalizedOrder = finalizeDemoCheckout();
+    if (finalizedOrder) setDemoOrder(finalizedOrder);
+  }, [isSuccess, isDemoCheckout]);
 
   function resetDemoAndReturn() {
     clearDemoSandbox();
@@ -797,7 +819,7 @@ function CheckoutResult({ status, isDemoMode = false }) {
             <p>
               {isSuccess
                 ? isDemoCheckout
-                  ? "No Stripe Session was created and real SWRM inventory was not changed. This browser's demo inventory and vendor registration sandbox were updated so you can verify the full purchase path."
+                  ? "Stripe test checkout completed. Real SWRM inventory was not changed; this browser's demo inventory and vendor registration sandbox were updated so you can verify the full purchase path."
                   : "Stripe has confirmed the checkout session. The SWRM team can follow up with logo, ad, and booth details."
                 : "No payment was completed. Return to the portal when you are ready to continue."}
             </p>
@@ -807,6 +829,9 @@ function CheckoutResult({ status, isDemoMode = false }) {
                   <span>Demo order {demoOrder.id}</span>
                   <strong>{formatCurrency(demoOrder.total)}</strong>
                   <span>{demoOrder.itemCount} sponsorship item(s) simulated</span>
+                  <span>
+                    {demoOrder.completedAt ? "Demo order book updated" : "Finalizing demo order book"}
+                  </span>
                 </div>
                 <div className="demo-registration" aria-label="Demo vendor registration summary">
                   <span>Vendor registration captured</span>
@@ -998,6 +1023,14 @@ function writeStoredDemoOrder(order) {
   appendStoredDemoOrder(order);
 }
 
+function writePendingDemoOrder(order) {
+  try {
+    window.sessionStorage.setItem(pendingDemoOrderStorageKey, JSON.stringify(order));
+  } catch (error) {
+    // Pending order data is recovered from the cart before redirect when storage is available.
+  }
+}
+
 function readStoredDemoOrder() {
   try {
     const rawValue = window.sessionStorage.getItem(demoOrderStorageKey);
@@ -1007,14 +1040,37 @@ function readStoredDemoOrder() {
   }
 }
 
+function readPendingDemoOrder() {
+  try {
+    const rawValue = window.sessionStorage.getItem(pendingDemoOrderStorageKey);
+    return rawValue ? JSON.parse(rawValue) : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function clearPendingDemoOrder() {
+  try {
+    window.sessionStorage.removeItem(pendingDemoOrderStorageKey);
+  } catch (error) {
+    // Ignore storage failures during demo cleanup.
+  }
+}
+
 function clearStoredDemoOrder() {
   try {
     window.sessionStorage.removeItem(demoOrderStorageKey);
   } catch (error) {
     // Ignore storage failures during demo cleanup.
   }
+  clearPendingDemoOrder();
   try {
     window.localStorage.removeItem(demoOrdersStorageKey);
+  } catch (error) {
+    // Ignore storage failures during demo cleanup.
+  }
+  try {
+    window.localStorage.removeItem(completedDemoOrderIdsStorageKey);
   } catch (error) {
     // Ignore storage failures during demo cleanup.
   }
@@ -1029,6 +1085,78 @@ function appendStoredDemoOrder(order) {
     window.localStorage.setItem(demoOrdersStorageKey, JSON.stringify(nextOrders));
   } catch (error) {
     // Demo order history is only for local verification.
+  }
+}
+
+function finalizeDemoCheckout() {
+  const orderId = new URLSearchParams(window.location.search).get("demo_order") || "";
+  const pendingOrder = readPendingDemoOrder();
+  const storedOrder = readStoredDemoOrder();
+  const order =
+    pendingOrder && (!orderId || pendingOrder.id === orderId)
+      ? pendingOrder
+      : storedOrder && (!orderId || storedOrder.id === orderId)
+        ? storedOrder
+        : null;
+
+  if (!order?.id) return null;
+  if (isCompletedDemoOrder(order.id)) return storedOrder || order;
+
+  const completedOrder = {
+    ...order,
+    status: "demo",
+    stripeDemo: true,
+    completedAt: new Date().toISOString()
+  };
+
+  try {
+    const currentInventory = ensureDemoInventory(createInitialCatalog(), readStoredDemoInventory());
+    const nextInventory = reserveDemoInventory(currentInventory, demoOrderToCartLines(order));
+    writeStoredDemoInventory(nextInventory);
+  } catch (error) {
+    // The demo receipt/order book should still prove vendor capture if local inventory storage fails.
+  }
+
+  markCompletedDemoOrder(order.id);
+  writeStoredDemoOrder(completedOrder);
+  clearPendingDemoOrder();
+  return completedOrder;
+}
+
+function demoOrderToCartLines(order) {
+  return (Array.isArray(order.items) ? order.items : []).map((item) => ({
+    id: item.id,
+    quantity: Math.max(1, Number(item.quantity) || 1),
+    item: {
+      id: item.id,
+      name: item.name || "Demo sponsorship item",
+      stockTotal: null,
+      stockRemaining: null
+    }
+  }));
+}
+
+function isCompletedDemoOrder(orderId) {
+  return readCompletedDemoOrderIds().has(orderId);
+}
+
+function markCompletedDemoOrder(orderId) {
+  const ids = readCompletedDemoOrderIds();
+  ids.add(orderId);
+  try {
+    window.localStorage.setItem(completedDemoOrderIdsStorageKey, JSON.stringify(Array.from(ids).slice(-100)));
+  } catch (error) {
+    // Demo completion tracking is only used to prevent duplicate local inventory updates.
+  }
+}
+
+function readCompletedDemoOrderIds() {
+  try {
+    const rawValue = window.localStorage.getItem(completedDemoOrderIdsStorageKey);
+    const parsed = rawValue ? JSON.parse(rawValue) : [];
+    return new Set(Array.isArray(parsed) ? parsed.filter(Boolean) : []);
+  } catch (error) {
+    return new Set();
   }
 }
 

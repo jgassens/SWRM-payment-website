@@ -10,6 +10,9 @@ export function apiUrl(path) {
 export const checkoutEndpoint =
   import.meta.env.VITE_CHECKOUT_API_URL || apiUrl("/api/create-checkout-session");
 
+export const demoCheckoutEndpoint =
+  import.meta.env.VITE_DEMO_CHECKOUT_API_URL || apiUrl("/api/create-demo-checkout-session");
+
 export async function readJson(response) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {

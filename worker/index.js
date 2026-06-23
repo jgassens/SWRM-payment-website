@@ -47,6 +47,9 @@ export default {
           {
             ok: true,
             stripeMode: env.STRIPE_SECRET_KEY ? "checkout" : "missing-secret",
+            stripeDemoMode: resolveDemoStripeSecret(env)
+              ? "test-checkout"
+              : "missing-test-secret",
             catalogMode: env.DB ? "d1" : "static"
           },
           { origin: allowedOrigin }
@@ -60,6 +63,10 @@ export default {
 
       if (url.pathname === "/api/create-checkout-session" && request.method === "POST") {
         return await handleCheckout(request, env, allowedOrigin);
+      }
+
+      if (url.pathname === "/api/create-demo-checkout-session" && request.method === "POST") {
+        return await handleDemoCheckout(request, env, allowedOrigin);
       }
 
       if (url.pathname === "/api/stripe-webhook" && request.method === "POST") {
@@ -152,6 +159,49 @@ async function handleCheckout(request, env, origin) {
   }
 }
 
+async function handleDemoCheckout(request, env, origin) {
+  const demoStripeSecret = resolveDemoStripeSecret(env);
+  if (!demoStripeSecret) {
+    return jsonResponse(
+      { error: "Stripe demo checkout needs a test-mode Stripe secret key." },
+      { status: 503, origin }
+    );
+  }
+
+  const body = await request.json().catch(() => null);
+  const items = await normalizeCart(body?.cart, env);
+  const vendor = normalizeVendor(body?.vendor);
+
+  if (items.length === 0) {
+    return jsonResponse(
+      { error: "Select at least one sponsorship item." },
+      { status: 400, origin }
+    );
+  }
+
+  if (!vendor.organization || !vendor.contactName || !vendor.email) {
+    return jsonResponse(
+      { error: "Organization, contact name, and email are required before checkout." },
+      { status: 400, origin }
+    );
+  }
+
+  const demoOrderId = clean(body?.demoOrderId, 120) || `demo_${crypto.randomUUID()}`;
+  const session = await createCheckoutSession(env, items, vendor, demoOrderId, {
+    mode: "demo",
+    stripeSecret: demoStripeSecret
+  });
+
+  if (!session.url) {
+    throw new Error("Stripe did not return a demo Checkout URL.");
+  }
+
+  return jsonResponse(
+    { mode: "demo-checkout", url: session.url },
+    { origin }
+  );
+}
+
 async function handleAdmin(request, env, origin, url) {
   if (url.pathname === "/api/admin/packages" && request.method === "GET") {
     const packages = await listPackages(env, { activeOnly: false });
@@ -194,8 +244,11 @@ async function handleAdmin(request, env, origin, url) {
   return jsonResponse({ error: "Not found." }, { status: 404, origin });
 }
 
-async function createCheckoutSession(env, items, vendor, reservationId) {
+async function createCheckoutSession(env, items, vendor, reservationId, options = {}) {
   const frontendUrl = trimTrailingSlash(env.FRONTEND_URL);
+  const stripeSecret = options.stripeSecret || env.STRIPE_SECRET_KEY;
+  const isDemoCheckout = options.mode === "demo";
+  const encodedReservationId = encodeURIComponent(reservationId);
   const form = new URLSearchParams();
 
   form.set("mode", "payment");
@@ -203,9 +256,20 @@ async function createCheckoutSession(env, items, vendor, reservationId) {
   form.set("payment_intent_data[receipt_email]", vendor.email);
   form.set("invoice_creation[enabled]", "true");
   form.set("client_reference_id", reservationId);
-  form.set("success_url", `${frontendUrl}/?checkout=success&session_id={CHECKOUT_SESSION_ID}`);
-  form.set("cancel_url", `${frontendUrl}/?checkout=cancel`);
+  form.set(
+    "success_url",
+    isDemoCheckout
+      ? `${frontendUrl}/?checkout=success&demo=1&stripe_demo=1&demo_order=${encodedReservationId}&session_id={CHECKOUT_SESSION_ID}`
+      : `${frontendUrl}/?checkout=success&session_id={CHECKOUT_SESSION_ID}`
+  );
+  form.set(
+    "cancel_url",
+    isDemoCheckout
+      ? `${frontendUrl}/?checkout=cancel&demo=1&stripe_demo=1&demo_order=${encodedReservationId}`
+      : `${frontendUrl}/?checkout=cancel`
+  );
   form.set("metadata[reservation_id]", reservationId);
+  form.set("metadata[checkout_mode]", isDemoCheckout ? "demo" : "live");
   form.set("metadata[organization]", vendor.organization);
   form.set("metadata[contact_name]", vendor.contactName);
   form.set("metadata[phone]", vendor.phone || "");
@@ -238,7 +302,7 @@ async function createCheckoutSession(env, items, vendor, reservationId) {
   const response = await fetch("https://api.stripe.com/v1/checkout/sessions", {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${env.STRIPE_SECRET_KEY}`,
+      Authorization: `Bearer ${stripeSecret}`,
       "Content-Type": "application/x-www-form-urlencoded",
       "Stripe-Version": stripeApiVersion
     },
@@ -953,6 +1017,18 @@ function stripeObjectId(value) {
 
 function clean(value, max = 500) {
   return String(value || "").trim().slice(0, max);
+}
+
+function isStripeTestSecret(value) {
+  return String(value || "").trim().startsWith("sk_test_");
+}
+
+function resolveDemoStripeSecret(env) {
+  const dedicatedDemoSecret = String(env.STRIPE_DEMO_SECRET_KEY || "").trim();
+  if (isStripeTestSecret(dedicatedDemoSecret)) return dedicatedDemoSecret;
+
+  const configuredCheckoutSecret = String(env.STRIPE_SECRET_KEY || "").trim();
+  return isStripeTestSecret(configuredCheckoutSecret) ? configuredCheckoutSecret : "";
 }
 
 function clampInteger(value, min, max) {
