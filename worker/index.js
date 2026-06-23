@@ -200,6 +200,10 @@ async function handleDemoCheckout(request, env, origin) {
     throw new Error("Stripe did not return a demo Checkout URL.");
   }
 
+  await recordReservation(env, demoOrderId, session, items, vendor, {
+    checkoutMode: "demo"
+  });
+
   return jsonResponse(
     { mode: "demo-checkout", url: session.url },
     { origin }
@@ -207,13 +211,6 @@ async function handleDemoCheckout(request, env, origin) {
 }
 
 async function handleConfirmCheckoutSession(request, env, origin) {
-  if (!env.STRIPE_SECRET_KEY) {
-    return jsonResponse(
-      { error: "Stripe checkout is not configured." },
-      { status: 503, origin }
-    );
-  }
-
   const body = await request.json().catch(() => null);
   const sessionId = clean(body?.sessionId, 500);
 
@@ -224,14 +221,21 @@ async function handleConfirmCheckoutSession(request, env, origin) {
     );
   }
 
-  const session = await retrieveCheckoutSession(env, sessionId, env.STRIPE_SECRET_KEY);
+  const checkoutSecret = resolveCheckoutLookupSecret(env, sessionId);
+  if (!checkoutSecret) {
+    return jsonResponse(
+      { error: "Stripe checkout is not configured." },
+      { status: 503, origin }
+    );
+  }
+
+  const session = await retrieveCheckoutSession(env, sessionId, checkoutSecret);
   const reservationId = session?.metadata?.reservation_id || (await findReservationId(env, session.id));
   const paid = isPaidCheckoutSession(session);
   let recorded = false;
 
   if (reservationId && paid) {
-    await recordCompletedCheckout(env, reservationId, session);
-    recorded = true;
+    recorded = await recordCompletedCheckout(env, reservationId, session);
   }
 
   return jsonResponse(
@@ -508,20 +512,22 @@ async function releaseInventory(env, items) {
   }
 }
 
-async function recordReservation(env, reservationId, session, items, vendor) {
+async function recordReservation(env, reservationId, session, items, vendor, options = {}) {
   if (!env.DB) return;
 
   const now = Math.floor(Date.now() / 1000);
   const amountTotal = sumItems(items);
+  const checkoutMode = normalizeCheckoutMode(options.checkoutMode || session?.metadata?.checkout_mode);
   await env.DB.prepare(`
     INSERT INTO checkout_sessions (
-      id, stripe_session_id, status, organization, contact_name, email, phone, website,
+      id, stripe_session_id, checkout_mode, status, organization, contact_name, email, phone, website,
       notes, package_summary, amount_total, currency, payment_status, created_at, expires_at, updated_at
     )
-    VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, 'usd', ?, ?, ?, ?)
+    VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, 'usd', ?, ?, ?, ?)
   `).bind(
     reservationId,
     session.id || "",
+    checkoutMode,
     vendor.organization,
     vendor.contactName,
     vendor.email,
@@ -579,7 +585,7 @@ async function listOrders(env) {
   await ensureSchema(env.DB);
 
   const { results } = await env.DB.prepare(`
-    SELECT id, stripe_session_id, status, payment_status, organization, contact_name, email,
+    SELECT id, stripe_session_id, checkout_mode, status, payment_status, organization, contact_name, email,
            phone, website, notes, package_summary, amount_total, currency,
            stripe_payment_intent_id, stripe_customer_id, stripe_invoice_id,
            stripe_customer_name, stripe_customer_email, stripe_customer_phone,
@@ -616,44 +622,55 @@ async function listOrders(env) {
     itemsBySession.set(row.session_id, current);
   });
 
-  return results.map((row) => ({
-    id: row.id,
-    stripeSessionId: row.stripe_session_id,
-    status: row.status,
-    paymentStatus: row.payment_status || "",
-    organization: row.organization,
-    contactName: row.contact_name,
-    email: row.email,
-    phone: row.phone,
-    website: row.website,
-    notes: row.notes || "",
-    packageSummary: row.package_summary,
-    amountTotal: Number(row.amount_total || 0),
-    currency: row.currency || "usd",
-    stripePaymentIntentId: row.stripe_payment_intent_id || "",
-    stripeCustomerId: row.stripe_customer_id || "",
-    stripeInvoiceId: row.stripe_invoice_id || "",
-    stripeCustomerName: row.stripe_customer_name || "",
-    stripeCustomerEmail: row.stripe_customer_email || "",
-    stripeCustomerPhone: row.stripe_customer_phone || "",
-    billingAddress: parseObject(row.billing_address_json),
-    createdAt: row.created_at,
-    expiresAt: row.expires_at,
-    updatedAt: row.updated_at,
-    items: itemsBySession.get(row.id) || []
-  }));
+  return results.map((row) => {
+    const checkoutMode =
+      row.checkout_mode === "demo" || isStripeTestSessionId(row.stripe_session_id) ? "demo" : "live";
+    const status = checkoutMode === "demo" && row.status === "paid" ? "demo" : row.status;
+
+    return {
+      id: row.id,
+      stripeSessionId: row.stripe_session_id,
+      checkoutMode,
+      status,
+      paymentStatus: row.payment_status || "",
+      organization: row.organization,
+      contactName: row.contact_name,
+      email: row.email,
+      phone: row.phone,
+      website: row.website,
+      notes: row.notes || "",
+      packageSummary: row.package_summary,
+      amountTotal: Number(row.amount_total || 0),
+      currency: row.currency || "usd",
+      stripePaymentIntentId: row.stripe_payment_intent_id || "",
+      stripeCustomerId: row.stripe_customer_id || "",
+      stripeInvoiceId: row.stripe_invoice_id || "",
+      stripeCustomerName: row.stripe_customer_name || "",
+      stripeCustomerEmail: row.stripe_customer_email || "",
+      stripeCustomerPhone: row.stripe_customer_phone || "",
+      billingAddress: parseObject(row.billing_address_json),
+      createdAt: row.created_at,
+      expiresAt: row.expires_at,
+      updatedAt: row.updated_at,
+      isDemo: checkoutMode === "demo",
+      items: itemsBySession.get(row.id) || []
+    };
+  });
 }
 
 async function recordCompletedCheckout(env, reservationId, session) {
-  if (!env.DB || !reservationId) return;
+  if (!env.DB || !reservationId) return false;
 
   const now = Math.floor(Date.now() / 1000);
   const customerDetails = session?.customer_details || {};
   const billingAddress = customerDetails.address || {};
+  const checkoutMode = checkoutModeFromStripeSession(session);
+  const nextStatus = checkoutMode === "demo" ? "demo" : "paid";
 
-  await env.DB.prepare(`
+  const result = await env.DB.prepare(`
     UPDATE checkout_sessions
-    SET status = 'paid',
+    SET status = ?,
+        checkout_mode = ?,
         stripe_session_id = COALESCE(NULLIF(?, ''), stripe_session_id),
         payment_status = ?,
         amount_total = COALESCE(?, amount_total),
@@ -668,6 +685,8 @@ async function recordCompletedCheckout(env, reservationId, session) {
         updated_at = ?
     WHERE id = ?
   `).bind(
+    nextStatus,
+    checkoutMode,
     clean(session.id, 500),
     session.payment_status || "paid",
     Number.isInteger(session.amount_total) ? session.amount_total : null,
@@ -682,6 +701,8 @@ async function recordCompletedCheckout(env, reservationId, session) {
     now,
     reservationId
   ).run();
+
+  return (result.meta?.changes || 0) > 0;
 }
 
 async function updatePackage(env, id, body) {
@@ -808,8 +829,19 @@ async function releaseExpiredReservations(env) {
 
 async function releaseReservationIfPending(env, reservationId, nextStatus) {
   if (!env.DB || !reservationId) return false;
-  const session = await env.DB.prepare("SELECT status FROM checkout_sessions WHERE id = ?").bind(reservationId).first();
+  const session = await env.DB.prepare(`
+    SELECT status, checkout_mode, stripe_session_id
+    FROM checkout_sessions
+    WHERE id = ?
+  `).bind(reservationId).first();
   if (!session || session.status !== "pending") return false;
+
+  const isDemo = session.checkout_mode === "demo" || isStripeTestSessionId(session.stripe_session_id);
+
+  if (isDemo) {
+    await markReservationStatus(env, reservationId, nextStatus);
+    return true;
+  }
 
   const { results } = await env.DB.prepare(`
     SELECT package_id, quantity
@@ -901,6 +933,7 @@ async function ensureSchema(db) {
     `CREATE TABLE IF NOT EXISTS checkout_sessions (
       id TEXT PRIMARY KEY,
       stripe_session_id TEXT UNIQUE,
+      checkout_mode TEXT NOT NULL DEFAULT 'live',
       status TEXT NOT NULL DEFAULT 'pending',
       organization TEXT NOT NULL DEFAULT '',
       contact_name TEXT NOT NULL DEFAULT '',
@@ -934,6 +967,7 @@ async function ensureSchema(db) {
     )`,
     "CREATE INDEX IF NOT EXISTS idx_packages_active_sort ON packages(active, sort_order)",
     "CREATE INDEX IF NOT EXISTS idx_checkout_sessions_status_expires ON checkout_sessions(status, expires_at)",
+    "CREATE INDEX IF NOT EXISTS idx_checkout_sessions_mode ON checkout_sessions(checkout_mode)",
     "CREATE INDEX IF NOT EXISTS idx_checkout_sessions_stripe ON checkout_sessions(stripe_session_id)"
   ];
 
@@ -1096,6 +1130,14 @@ function isPaidCheckoutSession(session) {
   return session?.payment_status === "paid" || session?.payment_status === "no_payment_required";
 }
 
+function normalizeCheckoutMode(value) {
+  return value === "demo" ? "demo" : "live";
+}
+
+function checkoutModeFromStripeSession(session) {
+  return session?.metadata?.checkout_mode === "demo" || isStripeTestSessionId(session?.id) ? "demo" : "live";
+}
+
 function clean(value, max = 500) {
   return String(value || "").trim().slice(0, max);
 }
@@ -1104,12 +1146,24 @@ function isStripeTestSecret(value) {
   return String(value || "").trim().startsWith("sk_test_");
 }
 
+function isStripeTestSessionId(value) {
+  return String(value || "").trim().startsWith("cs_test_");
+}
+
 function resolveDemoStripeSecret(env) {
   const dedicatedDemoSecret = String(env.STRIPE_DEMO_SECRET_KEY || "").trim();
   if (isStripeTestSecret(dedicatedDemoSecret)) return dedicatedDemoSecret;
 
   const configuredCheckoutSecret = String(env.STRIPE_SECRET_KEY || "").trim();
   return isStripeTestSecret(configuredCheckoutSecret) ? configuredCheckoutSecret : "";
+}
+
+function resolveCheckoutLookupSecret(env, sessionId) {
+  if (isStripeTestSessionId(sessionId)) {
+    return resolveDemoStripeSecret(env) || String(env.STRIPE_SECRET_KEY || "").trim();
+  }
+
+  return String(env.STRIPE_SECRET_KEY || "").trim();
 }
 
 function clampInteger(value, min, max) {

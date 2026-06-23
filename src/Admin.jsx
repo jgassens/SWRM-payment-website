@@ -303,8 +303,8 @@ export default function AdminApp({ appBase, Header }) {
 }
 
 function OrderBook({ orders, allOrders, query, status, onQueryChange, onStatusChange }) {
-  const paidOrders = allOrders.filter((order) => order.status === "paid");
-  const demoOrders = allOrders.filter((order) => order.status === "demo");
+  const paidOrders = allOrders.filter((order) => order.status === "paid" && !isDemoOrder(order));
+  const demoOrders = allOrders.filter(isDemoOrder);
   const paidTotal = paidOrders.reduce((sum, order) => sum + Number(order.amountTotal || 0), 0);
 
   return (
@@ -370,8 +370,10 @@ function Metric({ value, label }) {
 }
 
 function OrderCard({ order }) {
+  const demoOrder = isDemoOrder(order);
+  const displayStatus = demoOrder && order.status === "paid" ? "demo" : order.status || "pending";
   const stripeLookup = order.stripePaymentIntentId || order.stripeSessionId || order.stripeInvoiceId;
-  const stripeSearchUrl = order.isDemo
+  const stripeSearchUrl = demoOrder
     ? "https://dashboard.stripe.com/test/search"
     : "https://dashboard.stripe.com/search";
   const contactHref = `mailto:${order.email}?subject=${encodeURIComponent(
@@ -382,7 +384,7 @@ function OrderCard({ order }) {
     <article className="order-card">
       <div className="order-card-main">
         <div>
-          <p className={`status-pill status-${order.status || "pending"}`}>{order.status || "pending"}</p>
+          <p className={`status-pill status-${displayStatus}`}>{displayStatus}</p>
           <h3>{order.organization || "Unknown organization"}</h3>
           <p className="order-contact">
             {order.contactName || "No contact"} ·{" "}
@@ -425,7 +427,7 @@ function OrderCard({ order }) {
 
       <div className="order-meta">
         <span>Session {order.stripeSessionId || order.id}</span>
-        {order.isDemo ? <span>Demo sandbox order</span> : null}
+        {demoOrder ? <span>Demo sandbox order</span> : null}
         {order.paymentStatus ? <span>Payment {order.paymentStatus}</span> : null}
         {order.stripeInvoiceId ? <span>Invoice {order.stripeInvoiceId}</span> : null}
         {stripeLookup ? (
@@ -651,6 +653,7 @@ function toDemoOrder(order) {
     stripeSessionId: order.stripeSessionId || "",
     status: "demo",
     paymentStatus: order.paymentStatus || (order.completedAt ? "paid" : "simulated"),
+    checkoutMode: "demo",
     organization: order.vendor?.organization || "Demo organization",
     contactName: order.vendor?.contactName || "",
     email: order.vendor?.email || "",
@@ -734,7 +737,10 @@ function filterOrders(orders, query, status) {
   const normalizedQuery = query.trim().toLowerCase();
 
   return orders.filter((order) => {
-    const statusMatches = status === "all" || order.status === status;
+    const demoOrder = isDemoOrder(order);
+    const statusMatches =
+      status === "all" ||
+      (status === "demo" ? demoOrder : order.status === status && !(status === "paid" && demoOrder));
     if (!statusMatches) return false;
     if (!normalizedQuery) return true;
 
@@ -757,4 +763,8 @@ function filterOrders(orders, query, status) {
 
     return searchable.includes(normalizedQuery);
   });
+}
+
+function isDemoOrder(order) {
+  return Boolean(order?.isDemo || order?.checkoutMode === "demo" || order?.status === "demo");
 }
