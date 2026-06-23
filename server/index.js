@@ -1,7 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import Stripe from "stripe";
-import { catalogById, formatCurrency } from "../src/catalog.js";
+import { catalogById, formatCurrency, packages, withInventoryDefaults } from "../src/catalog.js";
 
 const app = express();
 const port = Number(process.env.PORT || 5173);
@@ -17,7 +17,20 @@ app.use(express.json({ limit: "1mb" }));
 app.get("/api/health", (_req, res) => {
   res.json({
     ok: true,
-    stripeMode: stripe ? "checkout" : "mock"
+    stripeMode: stripe ? "checkout" : "mock",
+    catalogMode: "static"
+  });
+});
+
+app.get("/api/catalog", (_req, res) => {
+  res.json({
+    packages: packages.map((item, index) => withInventoryDefaults(item, index))
+  });
+});
+
+app.all(/^\/api\/admin\//, (_req, res) => {
+  res.status(501).json({
+    error: "Admin editing runs against the deployed Cloudflare Worker. Set VITE_API_BASE_URL to the Worker URL for local admin testing."
   });
 });
 

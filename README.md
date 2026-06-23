@@ -25,6 +25,14 @@ The static storefront is built for GitHub Pages. The Stripe Checkout endpoint ru
 pnpm worker:check
 pnpm worker:deploy
 pnpm exec wrangler secret put STRIPE_SECRET_KEY
+pnpm exec wrangler secret put ADMIN_PASSWORD
+pnpm exec wrangler secret put STRIPE_WEBHOOK_SECRET
 ```
 
-GitHub Pages is deployed by `.github/workflows/deploy-pages.yml` on pushes to `main`. The workflow builds Vite with `VITE_BASE_PATH=/SWRM-payment-website/` and points checkout traffic at the Cloudflare Worker.
+Mutable package prices and inventory live in Cloudflare D1. Apply schema migrations with:
+
+```bash
+pnpm exec wrangler d1 migrations apply swrm-payment-store --remote
+```
+
+The admin page is available at `?admin=1`. GitHub Pages is deployed by `.github/workflows/deploy-pages.yml` on pushes to `main`. The workflow builds Vite with `VITE_BASE_PATH=/SWRM-payment-website/` and points catalog, admin, and checkout traffic at the Cloudflare Worker.

@@ -441,6 +441,32 @@ export const packages = [
 
 export const catalogById = new Map(packages.map((item) => [item.id, item]));
 
+export function inferInitialStock(item) {
+  const availability = `${item.availability || ""} ${item.label || ""}`.toLowerCase();
+  const upToMatch = availability.match(/up to\s+(\d+)/);
+  const availableMatch = availability.match(/(\d+)\s+available/);
+
+  if (availability.includes("unlimited") || availability.includes("multiple")) return null;
+  if (availability.includes("1 only") || availability.includes("exclusive")) return 1;
+  if (item.availability === "E") return 1;
+  if (upToMatch) return Number(upToMatch[1]);
+  if (availableMatch) return Number(availableMatch[1]);
+  return null;
+}
+
+export function withInventoryDefaults(item, index = 0) {
+  const stock = inferInitialStock(item);
+
+  return {
+    ...item,
+    priceCents: item.price * 100,
+    stockTotal: stock,
+    stockRemaining: stock,
+    active: true,
+    sortOrder: index
+  };
+}
+
 export function formatCurrency(value) {
   return new Intl.NumberFormat("en-US", {
     style: "currency",

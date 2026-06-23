@@ -1,0 +1,378 @@
+import React, { useMemo, useState } from "react";
+import { apiUrl, readJson } from "./api.js";
+import { categories, formatCurrency } from "./catalog.js";
+
+const storedPasswordKey = "swrm-admin-password";
+
+export default function AdminApp({ appBase, Header }) {
+  const [password, setPassword] = useState(() => sessionStorage.getItem(storedPasswordKey) || "");
+  const [draftPassword, setDraftPassword] = useState("");
+  const [packages, setPackages] = useState([]);
+  const [reservations, setReservations] = useState([]);
+  const [category, setCategory] = useState("all");
+  const [status, setStatus] = useState({ type: "idle", message: "" });
+  const [loading, setLoading] = useState(false);
+
+  const authed = Boolean(password);
+  const visiblePackages = useMemo(
+    () => packages.filter((item) => category === "all" || item.category === category),
+    [packages, category]
+  );
+
+  async function loadAdmin(nextPassword = password) {
+    setLoading(true);
+    setStatus({ type: "idle", message: "" });
+    try {
+      const [packageData, reservationData] = await Promise.all([
+        adminFetch("/api/admin/packages", nextPassword),
+        adminFetch("/api/admin/reservations", nextPassword)
+      ]);
+      setPackages(packageData.packages.map(toDraftPackage));
+      setReservations(reservationData.reservations || []);
+      setStatus({ type: "success", message: "Admin catalog loaded." });
+    } catch (error) {
+      setStatus({ type: "error", message: error.message || "Admin login failed." });
+      sessionStorage.removeItem(storedPasswordKey);
+      setPassword("");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function login(event) {
+    event.preventDefault();
+    const nextPassword = draftPassword.trim();
+    if (!nextPassword) return;
+    setPassword(nextPassword);
+    sessionStorage.setItem(storedPasswordKey, nextPassword);
+    await loadAdmin(nextPassword);
+  }
+
+  function logout() {
+    sessionStorage.removeItem(storedPasswordKey);
+    setPassword("");
+    setDraftPassword("");
+    setPackages([]);
+    setReservations([]);
+  }
+
+  function updatePackage(id, field, value) {
+    setPackages((current) =>
+      current.map((item) => (item.id === id ? { ...item, [field]: value, dirty: true } : item))
+    );
+  }
+
+  async function savePackage(item) {
+    setStatus({ type: "idle", message: "" });
+    try {
+      const payload = {
+        name: item.name,
+        label: item.label,
+        priceCents: dollarsToCents(item.price),
+        availability: item.availability,
+        summary: item.summary,
+        stockTotal: parseNullableInteger(item.stockTotal),
+        stockRemaining: parseNullableInteger(item.stockRemaining),
+        active: item.active
+      };
+
+      const data = await adminFetch(`/api/admin/packages/${encodeURIComponent(item.id)}`, password, {
+        method: "PUT",
+        body: JSON.stringify(payload)
+      });
+
+      setPackages((current) =>
+        current.map((row) => (row.id === item.id ? toDraftPackage(data.package) : row))
+      );
+      setStatus({ type: "success", message: `${item.name} saved.` });
+    } catch (error) {
+      setStatus({ type: "error", message: error.message || "Package could not be saved." });
+    }
+  }
+
+  async function releaseExpired() {
+    setStatus({ type: "idle", message: "" });
+    try {
+      const data = await adminFetch("/api/admin/release-expired", password, { method: "POST" });
+      setStatus({
+        type: "success",
+        message: `${data.released || 0} expired checkout hold${data.released === 1 ? "" : "s"} released.`
+      });
+      await loadAdmin(password);
+    } catch (error) {
+      setStatus({ type: "error", message: error.message || "Expired holds could not be released." });
+    }
+  }
+
+  return (
+    <div className="app-shell admin-app">
+      <Header cartCount={0} admin />
+      <main className="page admin-page">
+        <section className="intro-panel admin-intro">
+          <div className="accent-rule" aria-hidden="true" />
+          <div className="intro-copy">
+            <p className="section-label">SWRM payment admin</p>
+            <h1>Catalog, prices, and inventory</h1>
+            <p>
+              Update sponsorship pricing, hide sold-out packages, and manage finite inventory before vendors check out.
+            </p>
+          </div>
+          <div className="admin-actions">
+            <a className="outline-button result-link" href={appBase}>
+              View storefront
+            </a>
+            {authed ? (
+              <button type="button" className="outline-button" onClick={logout}>
+                Sign out
+              </button>
+            ) : null}
+          </div>
+        </section>
+
+        {!authed ? (
+          <form className="admin-login" onSubmit={login}>
+            <label>
+              Admin password
+              <input
+                type="password"
+                value={draftPassword}
+                onChange={(event) => setDraftPassword(event.target.value)}
+                autoComplete="current-password"
+              />
+            </label>
+            <button type="submit" className="checkout-button">
+              Open admin
+            </button>
+            {status.message ? <StatusMessage status={status} /> : null}
+          </form>
+        ) : (
+          <>
+            <div className="admin-toolbar">
+              <div className="category-tabs admin-tabs" role="tablist" aria-label="Admin categories">
+                <button
+                  type="button"
+                  className={category === "all" ? "tab active" : "tab"}
+                  onClick={() => setCategory("all")}
+                >
+                  All
+                </button>
+                {categories.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={category === item.id ? "tab active" : "tab"}
+                    onClick={() => setCategory(item.id)}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+              <div className="admin-command-row">
+                <button type="button" className="outline-button compact-button" onClick={() => loadAdmin(password)}>
+                  Refresh
+                </button>
+                <button type="button" className="outline-button compact-button" onClick={releaseExpired}>
+                  Release expired holds
+                </button>
+              </div>
+            </div>
+
+            {status.message ? <StatusMessage status={status} /> : null}
+            {loading ? <p className="checkout-note">Loading admin catalog...</p> : null}
+
+            <section className="admin-grid" aria-label="Editable sponsorship packages">
+              {visiblePackages.map((item) => (
+                <PackageEditor
+                  key={item.id}
+                  item={item}
+                  onChange={updatePackage}
+                  onSave={savePackage}
+                />
+              ))}
+            </section>
+
+            <section className="admin-reservations" aria-label="Recent checkout holds">
+              <div className="section-heading">
+                <div>
+                  <p className="section-label">Recent checkout activity</p>
+                  <h2>Reservations</h2>
+                </div>
+              </div>
+              {reservations.length === 0 ? (
+                <p className="empty-cart">No checkout sessions have been created yet.</p>
+              ) : (
+                <div className="reservation-table">
+                  {reservations.map((reservation) => (
+                    <div className="reservation-row" key={reservation.id}>
+                      <div>
+                        <strong>{reservation.organization || "Unknown organization"}</strong>
+                        <span>{reservation.packageSummary}</span>
+                      </div>
+                      <div>
+                        <strong>{reservation.status}</strong>
+                        <span>{formatReservationTime(reservation.createdAt)}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          </>
+        )}
+      </main>
+    </div>
+  );
+}
+
+function PackageEditor({ item, onChange, onSave }) {
+  const finiteStock = item.stockTotal !== "";
+
+  return (
+    <article className={item.active ? "admin-card" : "admin-card inactive"}>
+      <div className="admin-card-header">
+        <div>
+          <p className="section-label">{item.category}</p>
+          <h3>{item.name}</h3>
+        </div>
+        <label className="toggle-label">
+          <input
+            type="checkbox"
+            checked={item.active}
+            onChange={(event) => onChange(item.id, "active", event.target.checked)}
+          />
+          Live
+        </label>
+      </div>
+
+      <div className="admin-form-grid">
+        <label>
+          Price
+          <input
+            type="number"
+            min="0"
+            step="1"
+            value={item.price}
+            onChange={(event) => onChange(item.id, "price", event.target.value)}
+          />
+        </label>
+        <label>
+          Availability text
+          <input
+            value={item.availability}
+            onChange={(event) => onChange(item.id, "availability", event.target.value)}
+          />
+        </label>
+        <label>
+          Total stock
+          <input
+            type="number"
+            min="0"
+            placeholder="unlimited"
+            value={item.stockTotal}
+            onChange={(event) => onChange(item.id, "stockTotal", event.target.value)}
+          />
+        </label>
+        <label>
+          Remaining
+          <input
+            type="number"
+            min="0"
+            placeholder={finiteStock ? "0" : "unlimited"}
+            value={item.stockRemaining}
+            onChange={(event) => onChange(item.id, "stockRemaining", event.target.value)}
+          />
+        </label>
+        <label>
+          Label
+          <input
+            value={item.label}
+            onChange={(event) => onChange(item.id, "label", event.target.value)}
+          />
+        </label>
+        <label>
+          Name
+          <input
+            value={item.name}
+            onChange={(event) => onChange(item.id, "name", event.target.value)}
+          />
+        </label>
+        <label className="span-all">
+          Summary
+          <textarea
+            value={item.summary}
+            onChange={(event) => onChange(item.id, "summary", event.target.value)}
+          />
+        </label>
+      </div>
+
+      <div className="admin-card-footer">
+        <span>
+          {item.stockRemaining === ""
+            ? "Unlimited inventory"
+            : `${item.stockRemaining || 0} remaining`}
+        </span>
+        <button
+          type="button"
+          className="outline-button compact-button"
+          disabled={!item.dirty}
+          onClick={() => onSave(item)}
+        >
+          Save
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function StatusMessage({ status }) {
+  return (
+    <p className={status.type === "error" ? "checkout-error" : "checkout-note"}>
+      {status.message}
+    </p>
+  );
+}
+
+async function adminFetch(path, password, options = {}) {
+  const response = await fetch(apiUrl(path), {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${password}`,
+      ...(options.headers || {})
+    }
+  });
+  return readJson(response);
+}
+
+function toDraftPackage(item) {
+  return {
+    ...item,
+    price: String(Math.round(Number(item.price || 0))),
+    stockTotal: item.stockTotal === null || item.stockTotal === undefined ? "" : String(item.stockTotal),
+    stockRemaining:
+      item.stockRemaining === null || item.stockRemaining === undefined ? "" : String(item.stockRemaining),
+    label: item.label || "",
+    dirty: false
+  };
+}
+
+function parseNullableInteger(value) {
+  if (value === "" || value === null || value === undefined) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : null;
+}
+
+function dollarsToCents(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(0, Math.round(parsed * 100)) : 0;
+}
+
+function formatReservationTime(value) {
+  if (!value) return "";
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  }).format(new Date(value * 1000));
+}

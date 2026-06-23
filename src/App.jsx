@@ -1,10 +1,10 @@
-import React, { useMemo, useState } from "react";
-import { categories, catalogById, formatCurrency, packages } from "./catalog.js";
+import React, { useEffect, useMemo, useState } from "react";
+import AdminApp from "./Admin.jsx";
+import { apiUrl, checkoutEndpoint, readJson } from "./api.js";
+import { categories, formatCurrency, packages as fallbackPackages, withInventoryDefaults } from "./catalog.js";
 
 const appBase = import.meta.env.BASE_URL || "/";
 const logoUrl = `${appBase}assets/swrm-logo.webp`;
-const checkoutEndpoint =
-  import.meta.env.VITE_CHECKOUT_API_URL || "/api/create-checkout-session";
 
 const initialVendor = {
   organization: "",
@@ -16,23 +16,61 @@ const initialVendor = {
 };
 
 export default function App() {
-  const [activeCategory, setActiveCategory] = useState("tiers");
-  const [cart, setCart] = useState([]);
-  const [vendor, setVendor] = useState(initialVendor);
-  const [checkoutState, setCheckoutState] = useState({ status: "idle", message: "" });
-
   const currentRoute = window.location.pathname;
-  const checkoutResult = new URLSearchParams(window.location.search).get("checkout");
+  const params = new URLSearchParams(window.location.search);
+  const checkoutResult = params.get("checkout");
+
+  if (currentRoute.endsWith("/admin") || params.get("admin") === "1") {
+    return <AdminApp appBase={appBase} Header={ConferenceHeader} />;
+  }
+
   if (checkoutResult === "success" || currentRoute.endsWith("/success")) {
     return <CheckoutResult status="success" />;
   }
+
   if (checkoutResult === "cancel" || currentRoute.endsWith("/cancel")) {
     return <CheckoutResult status="cancel" />;
   }
 
+  return <Storefront />;
+}
+
+function Storefront() {
+  const [activeCategory, setActiveCategory] = useState("tiers");
+  const [catalog, setCatalog] = useState(() => fallbackPackages.map(withInventoryDefaults));
+  const [catalogState, setCatalogState] = useState({ status: "loading", message: "" });
+  const [cart, setCart] = useState([]);
+  const [vendor, setVendor] = useState(initialVendor);
+  const [checkoutState, setCheckoutState] = useState({ status: "idle", message: "" });
+
+  useEffect(() => {
+    let canceled = false;
+
+    async function loadCatalog() {
+      try {
+        const data = await readJson(await fetch(apiUrl("/api/catalog")));
+        if (canceled) return;
+        setCatalog(data.packages.map(normalizePackage));
+        setCatalogState({ status: "ready", message: "" });
+      } catch (error) {
+        if (canceled) return;
+        setCatalogState({
+          status: "fallback",
+          message: "Live inventory is temporarily unavailable; showing the prospectus catalog."
+        });
+      }
+    }
+
+    loadCatalog();
+    return () => {
+      canceled = true;
+    };
+  }, []);
+
+  const catalogById = useMemo(() => new Map(catalog.map((item) => [item.id, item])), [catalog]);
   const visiblePackages = useMemo(
-    () => packages.filter((item) => item.category === activeCategory),
-    [activeCategory]
+    () => catalog.filter((item) => item.category === activeCategory && item.active !== false),
+    [activeCategory, catalog]
   );
   const cartLines = useMemo(
     () =>
@@ -42,16 +80,22 @@ export default function App() {
           return item ? { ...line, item } : null;
         })
         .filter(Boolean),
-    [cart]
+    [cart, catalogById]
   );
   const total = cartLines.reduce((sum, line) => sum + line.item.price * line.quantity, 0);
 
   function addToCart(itemId) {
+    const item = catalogById.get(itemId);
+    if (!item || isSoldOut(item)) return;
+
     setCart((lines) => {
       const existing = lines.find((line) => line.id === itemId);
+      const maxQuantity = maxQuantityFor(item);
       if (existing) {
         return lines.map((line) =>
-          line.id === itemId ? { ...line, quantity: line.quantity + 1 } : line
+          line.id === itemId
+            ? { ...line, quantity: Math.min(maxQuantity, line.quantity + 1) }
+            : line
         );
       }
       return [...lines, { id: itemId, quantity: 1 }];
@@ -59,11 +103,14 @@ export default function App() {
   }
 
   function updateQuantity(itemId, change) {
+    const item = catalogById.get(itemId);
+    const maxQuantity = item ? maxQuantityFor(item) : 99;
+
     setCart((lines) =>
       lines
         .map((line) =>
           line.id === itemId
-            ? { ...line, quantity: Math.max(0, line.quantity + change) }
+            ? { ...line, quantity: Math.max(0, Math.min(maxQuantity, line.quantity + change)) }
             : line
         )
         .filter((line) => line.quantity > 0)
@@ -83,8 +130,7 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ cart, vendor })
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Unable to start checkout.");
+      const data = await readJson(response);
       window.location.href = data.url;
     } catch (error) {
       setCheckoutState({
@@ -117,6 +163,8 @@ export default function App() {
               onChange={setActiveCategory}
             />
 
+            {catalogState.message ? <p className="checkout-note">{catalogState.message}</p> : null}
+
             <div className="package-grid">
               {visiblePackages.map((item) => (
                 <PackageCard key={item.id} item={item} onAdd={addToCart} />
@@ -141,7 +189,7 @@ export default function App() {
   );
 }
 
-function ConferenceHeader({ cartCount }) {
+function ConferenceHeader({ cartCount, admin = false }) {
   return (
     <header>
       <div className="announcement">
@@ -149,16 +197,16 @@ function ConferenceHeader({ cartCount }) {
       </div>
       <div className="masthead">
         <nav className="masthead-inner" aria-label="Primary">
-          <a href="#packages" className="menu-link">
-            Packages
+          <a href={admin ? appBase : "#packages"} className="menu-link">
+            {admin ? "Storefront" : "Packages"}
           </a>
           <img
             className="conference-logo"
             src={logoUrl}
             alt="SWRM 2026 Chemistry at the Intersection of Energy, Sustainability and Biology"
           />
-          <a href="#checkout" className="menu-link cart-link">
-            Cart ({cartCount})
+          <a href={admin ? `${appBase}?admin=1` : "#checkout"} className="menu-link cart-link">
+            {admin ? "Admin" : `Cart (${cartCount})`}
           </a>
         </nav>
       </div>
@@ -218,10 +266,12 @@ function CategoryTabs({ activeCategory, onChange }) {
 }
 
 function PackageCard({ item, onAdd }) {
+  const soldOut = isSoldOut(item);
+
   return (
-    <article className="package-card" data-testid={`package-${item.id}`}>
+    <article className={soldOut ? "package-card sold-out" : "package-card"} data-testid={`package-${item.id}`}>
       <div className="card-topline">
-        <span>{item.availability}</span>
+        <span>{inventoryLabel(item)}</span>
         <span>{formatCurrency(item.price)}</span>
       </div>
       <h3>{item.name}</h3>
@@ -237,8 +287,9 @@ function PackageCard({ item, onAdd }) {
         className="outline-button"
         data-testid={`add-${item.id}`}
         onClick={() => onAdd(item.id)}
+        disabled={soldOut}
       >
-        Add
+        {soldOut ? "Sold out" : "Add"}
       </button>
     </article>
   );
@@ -423,4 +474,31 @@ function CheckoutResult({ status }) {
       </main>
     </div>
   );
+}
+
+function normalizePackage(item) {
+  return {
+    ...item,
+    price: Number(item.price || 0),
+    priceCents: Number(item.priceCents || 0),
+    included: Array.isArray(item.included) ? item.included : [],
+    stockTotal: item.stockTotal === undefined ? null : item.stockTotal,
+    stockRemaining: item.stockRemaining === undefined ? null : item.stockRemaining,
+    active: item.active !== false
+  };
+}
+
+function maxQuantityFor(item) {
+  return Number.isInteger(item.stockRemaining) ? Math.max(0, item.stockRemaining) : 99;
+}
+
+function isSoldOut(item) {
+  return item.active === false || item.stockRemaining === 0;
+}
+
+function inventoryLabel(item) {
+  if (item.active === false) return "Hidden";
+  if (item.stockRemaining === 0) return "Sold out";
+  if (Number.isInteger(item.stockRemaining)) return `${item.stockRemaining} left`;
+  return item.availability;
 }

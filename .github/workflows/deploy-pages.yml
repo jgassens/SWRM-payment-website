@@ -40,6 +40,7 @@ jobs:
         run: pnpm build
         env:
           VITE_BASE_PATH: /SWRM-payment-website/
+          VITE_API_BASE_URL: https://swrm-payment-checkout.jgassens.workers.dev
           VITE_CHECKOUT_API_URL: https://swrm-payment-checkout.jgassens.workers.dev/api/create-checkout-session
 
       - name: Configure Pages
