@@ -240,6 +240,58 @@ h3 {
   text-transform: uppercase;
 }
 
+.demo-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 22px;
+  align-items: center;
+  margin: -10px 0 28px;
+  padding: 20px 24px;
+  border: 1px solid rgba(17, 141, 150, 0.24);
+  border-left: 6px solid var(--teal-bright);
+  border-radius: 6px;
+  background: #edf7f8;
+}
+
+.demo-panel.active-demo {
+  border-color: rgba(215, 180, 93, 0.72);
+  border-left-color: var(--gold);
+  background: #f7f3e8;
+}
+
+.demo-panel strong,
+.demo-panel span {
+  display: block;
+}
+
+.demo-panel strong {
+  color: var(--teal-dark);
+  font-family: "Cabin Local", "Lato Local", Arial, sans-serif;
+  font-size: 20px;
+  line-height: 1.2;
+}
+
+.demo-panel span {
+  max-width: 760px;
+  margin-top: 6px;
+  color: #4e5658;
+  font-size: 15px;
+}
+
+.demo-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.demo-action {
+  min-width: 160px;
+  padding: 0 18px;
+  background: #ffffff;
+}
+
 .commerce-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 386px;
@@ -791,6 +843,75 @@ textarea:focus {
   text-decoration: none;
 }
 
+.result-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 24px;
+}
+
+.demo-confirmation-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.82fr) minmax(0, 1.18fr);
+  gap: 14px;
+  max-width: 760px;
+  margin-top: 20px;
+}
+
+.demo-receipt,
+.demo-registration {
+  display: grid;
+  gap: 4px;
+  padding: 16px 18px;
+  border: 1px solid rgba(17, 141, 150, 0.28);
+  border-left: 5px solid var(--teal-bright);
+  border-radius: 4px;
+  background: #edf7f8;
+}
+
+.demo-receipt span,
+.demo-registration span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.demo-receipt strong,
+.demo-registration strong {
+  color: var(--teal-dark);
+  font-family: "Cabin Local", "Lato Local", Arial, sans-serif;
+  font-size: 26px;
+  line-height: 1.08;
+}
+
+.demo-registration dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+  margin: 12px 0 0;
+}
+
+.demo-registration div,
+.demo-registration dt,
+.demo-registration dd {
+  min-width: 0;
+}
+
+.demo-registration dt {
+  color: var(--teal-dark);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.demo-registration dd {
+  margin: 2px 0 0;
+  color: #3e4648;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
 .admin-page {
   padding-bottom: 96px;
 }
@@ -925,6 +1046,183 @@ textarea:focus {
   border-radius: 6px;
 }
 
+.order-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.order-metric {
+  padding: 14px 16px;
+  border-left: 4px solid var(--teal-bright);
+  background: #edf7f8;
+}
+
+.order-metric strong,
+.order-metric span {
+  display: block;
+}
+
+.order-metric strong {
+  color: var(--teal-dark);
+  font-family: "Cabin Local", "Lato Local", Arial, sans-serif;
+  font-size: 26px;
+  line-height: 1;
+}
+
+.order-metric span {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.order-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 210px;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.order-list {
+  display: grid;
+  gap: 14px;
+}
+
+.order-card {
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fbfcfc;
+}
+
+.order-card-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: start;
+}
+
+.status-pill {
+  display: inline-flex;
+  min-height: 26px;
+  align-items: center;
+  margin-bottom: 8px;
+  padding: 0 10px;
+  border: 1px solid rgba(17, 141, 150, 0.28);
+  border-radius: 999px;
+  background: #edf7f8;
+  color: var(--teal-dark);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.status-paid {
+  border-color: rgba(60, 128, 83, 0.3);
+  background: #e9f5ec;
+  color: #2f6e45;
+}
+
+.status-expired {
+  border-color: rgba(157, 45, 33, 0.28);
+  background: #f8eae8;
+  color: #9d2d21;
+}
+
+.order-card h3 {
+  margin-bottom: 6px;
+}
+
+.order-contact,
+.order-website {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.order-contact a,
+.order-website,
+.order-meta a {
+  color: var(--teal-dark);
+}
+
+.order-total {
+  text-align: right;
+}
+
+.order-total strong,
+.order-total span {
+  display: block;
+}
+
+.order-total strong {
+  color: var(--teal-dark);
+  font-family: "Cabin Local", "Lato Local", Arial, sans-serif;
+  font-size: 26px;
+  line-height: 1;
+}
+
+.order-total span {
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.order-items {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.order-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  color: #3e4648;
+  font-size: 14px;
+}
+
+.order-item strong {
+  color: var(--ink);
+}
+
+.order-notes {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-left: 4px solid var(--gold);
+  background: #f7f3e8;
+}
+
+.order-notes span {
+  color: var(--teal-dark);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.order-notes p {
+  margin: 4px 0 0;
+  color: #3e4648;
+  font-size: 14px;
+}
+
+.order-meta {
+  display: flex;
+  gap: 10px 16px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .reservation-table {
   display: grid;
   border-top: 1px solid var(--line);
@@ -954,7 +1252,8 @@ textarea:focus {
   }
 
   .admin-grid,
-  .admin-toolbar {
+  .admin-toolbar,
+  .order-toolbar {
     grid-template-columns: 1fr;
   }
 
@@ -987,6 +1286,18 @@ textarea:focus {
     grid-column: 2;
     width: 100%;
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .demo-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .demo-confirmation-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .demo-actions {
+    justify-content: flex-start;
   }
 }
 
@@ -1025,8 +1336,14 @@ textarea:focus {
   .form-grid,
   .admin-card-footer,
   .admin-form-grid,
+  .order-metrics,
+  .order-card-main,
   .reservation-row {
     grid-template-columns: 1fr;
+  }
+
+  .order-total {
+    text-align: left;
   }
 
   .admin-card-actions {
@@ -1034,13 +1351,18 @@ textarea:focus {
   }
 
   .booth-step,
-  .addon-menu {
+  .addon-menu,
+  .demo-panel {
     padding: 22px;
   }
 
   .addon-pitch {
     grid-template-columns: 1fr;
     gap: 8px;
+  }
+
+  .demo-registration dl {
+    grid-template-columns: 1fr;
   }
 
   .section-heading {

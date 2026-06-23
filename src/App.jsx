@@ -24,35 +24,52 @@ const initialVendor = {
   website: "",
   notes: ""
 };
+const demoInventoryStorageKey = "swrm-demo-inventory-v1";
+const demoOrderStorageKey = "swrm-demo-last-order-v1";
 
 export default function App() {
   const currentRoute = window.location.pathname;
   const params = new URLSearchParams(window.location.search);
   const checkoutResult = params.get("checkout");
+  const isDemoMode = params.get("demo") === "1";
 
   if (currentRoute.endsWith("/admin") || params.get("admin") === "1") {
     return <AdminApp appBase={appBase} Header={ConferenceHeader} />;
   }
 
   if (checkoutResult === "success" || currentRoute.endsWith("/success")) {
-    return <CheckoutResult status="success" />;
+    return <CheckoutResult status="success" isDemoMode={isDemoMode} />;
   }
 
   if (checkoutResult === "cancel" || currentRoute.endsWith("/cancel")) {
-    return <CheckoutResult status="cancel" />;
+    return <CheckoutResult status="cancel" isDemoMode={isDemoMode} />;
   }
 
-  return <Storefront />;
+  return <Storefront isDemoMode={isDemoMode} />;
 }
 
-function Storefront() {
+function Storefront({ isDemoMode }) {
   const [activeCategory, setActiveCategory] = useState("recommended");
   const [selectedBoothPath, setSelectedBoothPath] = useState(null);
-  const [catalog, setCatalog] = useState(() => fallbackPackages.map(withInventoryDefaults));
+  const [baseCatalog, setBaseCatalog] = useState(createInitialCatalog);
+  const [demoInventory, setDemoInventory] = useState(() =>
+    isDemoMode ? readStoredDemoInventory() : null
+  );
   const [catalogState, setCatalogState] = useState({ status: "loading", message: "" });
   const [cart, setCart] = useState([]);
   const [vendor, setVendor] = useState(initialVendor);
   const [checkoutState, setCheckoutState] = useState({ status: "idle", message: "" });
+  const catalog = useMemo(
+    () => (isDemoMode ? applyDemoInventory(baseCatalog, demoInventory) : baseCatalog),
+    [baseCatalog, demoInventory, isDemoMode]
+  );
+
+  useEffect(() => {
+    if (!isDemoMode) {
+      clearDemoSandbox();
+      setDemoInventory(null);
+    }
+  }, [isDemoMode]);
 
   useEffect(() => {
     let canceled = false;
@@ -61,10 +78,17 @@ function Storefront() {
       try {
         const data = await readJson(await fetch(apiUrl("/api/catalog")));
         if (canceled) return;
-        setCatalog(data.packages.map(normalizePackage));
+        const nextCatalog = data.packages.map(normalizePackage);
+        setBaseCatalog(nextCatalog);
+        if (isDemoMode) {
+          setDemoInventory(ensureStoredDemoInventory(nextCatalog));
+        }
         setCatalogState({ status: "ready", message: "" });
       } catch (error) {
         if (canceled) return;
+        if (isDemoMode) {
+          setDemoInventory(ensureStoredDemoInventory(createInitialCatalog()));
+        }
         setCatalogState({
           status: "fallback",
           message: "Live inventory is temporarily unavailable; showing the prospectus catalog."
@@ -76,7 +100,7 @@ function Storefront() {
     return () => {
       canceled = true;
     };
-  }, []);
+  }, [isDemoMode]);
 
   const catalogById = useMemo(() => new Map(catalog.map((item) => [item.id, item])), [catalog]);
   const boothPackages = useMemo(
@@ -185,7 +209,52 @@ function Storefront() {
     setVendor((current) => ({ ...current, [field]: value }));
   }
 
+  function resetDemoInventory() {
+    const nextInventory = createDemoInventory(baseCatalog);
+    writeStoredDemoInventory(nextInventory);
+    clearStoredDemoOrder();
+    setDemoInventory(nextInventory);
+    setCart([]);
+    setSelectedBoothPath(null);
+    setCheckoutState({
+      status: "idle",
+      message: "Demo inventory reset from the current live catalog."
+    });
+  }
+
+  function exitDemoMode() {
+    clearDemoSandbox();
+    window.location.href = appBase;
+  }
+
   async function startCheckout() {
+    if (isDemoMode) {
+      setCheckoutState({ status: "loading", message: "Simulating Stripe Checkout..." });
+
+      try {
+        const currentInventory = ensureDemoInventory(
+          baseCatalog,
+          demoInventory || readStoredDemoInventory()
+        );
+        const nextInventory = reserveDemoInventory(currentInventory, cartLines);
+        const demoOrder = createDemoOrder({ cartLines, total, vendor });
+        writeStoredDemoInventory(nextInventory);
+        writeStoredDemoOrder(demoOrder);
+        setDemoInventory(nextInventory);
+        window.setTimeout(() => {
+          window.location.href = `${appBase}?checkout=success&demo=1&demo_order=${encodeURIComponent(
+            demoOrder.id
+          )}`;
+        }, 450);
+      } catch (error) {
+        setCheckoutState({
+          status: "error",
+          message: error.message || "Demo checkout could not be completed."
+        });
+      }
+      return;
+    }
+
     setCheckoutState({ status: "loading", message: "Creating checkout..." });
 
     try {
@@ -206,9 +275,14 @@ function Storefront() {
 
   return (
     <div className="app-shell">
-      <ConferenceHeader cartCount={cartCount} />
+      <ConferenceHeader cartCount={cartCount} isDemoMode={isDemoMode} />
       <main className="page">
         <IntroBlock />
+        <DemoModePanel
+          isDemoMode={isDemoMode}
+          onReset={resetDemoInventory}
+          onExit={exitDemoMode}
+        />
 
         <section className="commerce-grid" aria-label="SWRM sponsorship checkout">
           <div className="catalog-column">
@@ -282,6 +356,7 @@ function Storefront() {
             hasBoothPath={hasBoothPath}
             selectedBoothPath={selectedBoothPath}
             selectedBoothItem={selectedBoothItem}
+            isDemoMode={isDemoMode}
           />
         </section>
 
@@ -291,7 +366,10 @@ function Storefront() {
   );
 }
 
-function ConferenceHeader({ cartCount, admin = false }) {
+function ConferenceHeader({ cartCount, admin = false, isDemoMode = false }) {
+  const packageHref = isDemoMode ? `${appBase}?demo=1#packages` : "#packages";
+  const checkoutHref = isDemoMode ? `${appBase}?demo=1#checkout` : "#checkout";
+
   return (
     <header>
       <div className="announcement">
@@ -299,7 +377,7 @@ function ConferenceHeader({ cartCount, admin = false }) {
       </div>
       <div className="masthead">
         <nav className="masthead-inner" aria-label="Primary">
-          <a href={admin ? appBase : "#packages"} className="menu-link">
+          <a href={admin ? appBase : packageHref} className="menu-link">
             {admin ? "Storefront" : "Packages"}
           </a>
           <img
@@ -307,12 +385,53 @@ function ConferenceHeader({ cartCount, admin = false }) {
             src={logoUrl}
             alt="SWRM 2026 Chemistry at the Intersection of Energy, Sustainability and Biology"
           />
-          <a href={admin ? `${appBase}?admin=1` : "#checkout"} className="menu-link cart-link">
-            {admin ? "Admin" : `Cart (${cartCount})`}
+          <a href={admin ? `${appBase}?admin=1` : checkoutHref} className="menu-link cart-link">
+            {admin ? "Admin" : `${isDemoMode ? "Demo cart" : "Cart"} (${cartCount})`}
           </a>
         </nav>
       </div>
     </header>
+  );
+}
+
+function DemoModePanel({ isDemoMode, onReset, onExit }) {
+  if (!isDemoMode) {
+    return (
+      <section className="demo-panel" aria-label="Demo checkout mode">
+        <div>
+          <p className="section-label">Demo mode</p>
+          <strong>Test the full purchase flow without touching Stripe or live inventory.</strong>
+          <span>
+            Demo mode uses the current catalog, simulates checkout, and keeps inventory changes
+            only in this browser until it is reset or turned off.
+          </span>
+        </div>
+        <a className="outline-button demo-action" href={`${appBase}?demo=1`}>
+          Try demo mode
+        </a>
+      </section>
+    );
+  }
+
+  return (
+    <section className="demo-panel active-demo" aria-label="Demo checkout mode is active">
+      <div>
+        <p className="section-label">Demo mode active</p>
+        <strong>Checkout is simulated; real Stripe and live inventory stay untouched.</strong>
+        <span>
+          This sandbox starts from the live catalog and reduces only temporary inventory in this
+          browser, so you can confirm the buying flow behaves like the real one.
+        </span>
+      </div>
+      <div className="demo-actions">
+        <button type="button" className="outline-button demo-action" onClick={onReset}>
+          Reset demo
+        </button>
+        <button type="button" className="outline-button demo-action" onClick={onExit}>
+          Exit demo
+        </button>
+      </div>
+    </section>
   );
 }
 
@@ -472,7 +591,8 @@ function CartPanel({
   checkoutState,
   hasBoothPath,
   selectedBoothPath,
-  selectedBoothItem
+  selectedBoothItem,
+  isDemoMode = false
 }) {
   const cartItemCount = cartLines.reduce((sum, line) => sum + line.quantity, 0);
   const canCheckout =
@@ -532,6 +652,14 @@ function CartPanel({
             placeholder="https://"
           />
         </label>
+        <label className="span-all">
+          Logo / follow-up notes
+          <textarea
+            value={vendor.notes}
+            onChange={(event) => onVendorChange("notes", event.target.value)}
+            placeholder="Optional: logo contact, PO notes, ad file timing, or sponsorship details"
+          />
+        </label>
       </div>
 
       <div className="booth-summary">
@@ -587,7 +715,13 @@ function CartPanel({
         onClick={onCheckout}
         disabled={!canCheckout || checkoutState.status === "loading"}
       >
-        {checkoutState.status === "loading" ? "Creating checkout..." : "Proceed to checkout"}
+        {checkoutState.status === "loading"
+          ? isDemoMode
+            ? "Simulating checkout..."
+            : "Creating checkout..."
+          : isDemoMode
+            ? "Run demo checkout"
+            : "Proceed to checkout"}
       </button>
 
       {checkoutState.message ? (
@@ -596,6 +730,11 @@ function CartPanel({
         </p>
       ) : !hasBoothPath ? (
         <p className="checkout-note">Choose a booth path before checkout opens.</p>
+      ) : isDemoMode ? (
+        <p className="checkout-note">
+          Demo checkout will simulate Stripe, capture vendor registration, and adjust only this
+          browser's temporary inventory.
+        </p>
       ) : null}
     </aside>
   );
@@ -630,35 +769,106 @@ function Deadlines() {
   );
 }
 
-function CheckoutResult({ status }) {
+function CheckoutResult({ status, isDemoMode = false }) {
   const params = new URLSearchParams(window.location.search);
   const isMock = params.get("mock") === "1";
+  const isDemoCheckout = isDemoMode || isMock;
   const isSuccess = status === "success";
+  const demoOrder = isDemoCheckout ? readStoredDemoOrder() : null;
+
+  function resetDemoAndReturn() {
+    clearDemoSandbox();
+    window.location.href = `${appBase}?demo=1`;
+  }
+
+  function exitDemoAndReturn() {
+    clearDemoSandbox();
+    window.location.href = appBase;
+  }
 
   return (
     <div className="app-shell result-shell">
-      <ConferenceHeader cartCount={0} />
+      <ConferenceHeader cartCount={0} isDemoMode={isDemoCheckout} />
       <main className="page">
         <section className="intro-panel result-panel">
           <div className="accent-rule" aria-hidden="true" />
           <div className="intro-copy">
-            <p className="section-label">{isSuccess ? "Checkout complete" : "Checkout canceled"}</p>
-            <h1>{isSuccess ? "Thank you for supporting SWRM 2026." : "Your cart is still open."}</h1>
+            <p className="section-label">
+              {isSuccess
+                ? isDemoCheckout
+                  ? "Demo checkout complete"
+                  : "Checkout complete"
+                : "Checkout canceled"}
+            </p>
+            <h1>
+              {isSuccess
+                ? isDemoCheckout
+                  ? "Demo checkout ran like the real flow."
+                  : "Thank you for supporting SWRM 2026."
+                : "Your cart is still open."}
+            </h1>
             <p>
               {isSuccess
-                ? isMock
-                  ? "Mock checkout mode confirmed the purchase path. Add a Stripe test secret key to create real Checkout Sessions."
+                ? isDemoCheckout
+                  ? "No Stripe Session was created and real SWRM inventory was not changed. This browser's demo inventory and vendor registration sandbox were updated so you can verify the full purchase path."
                   : "Stripe has confirmed the checkout session. The SWRM team can follow up with logo, ad, and booth details."
                 : "No payment was completed. Return to the portal when you are ready to continue."}
             </p>
-            <a className="outline-button result-link" href={appBase}>
-              Back to portal
-            </a>
+            {isSuccess && isDemoCheckout && demoOrder ? (
+              <div className="demo-confirmation-grid">
+                <div className="demo-receipt" aria-label="Demo order summary">
+                  <span>Demo order {demoOrder.id}</span>
+                  <strong>{formatCurrency(demoOrder.total)}</strong>
+                  <span>{demoOrder.itemCount} sponsorship item(s) simulated</span>
+                </div>
+                <div className="demo-registration" aria-label="Demo vendor registration summary">
+                  <span>Vendor registration captured</span>
+                  <strong>{demoOrder.vendor.organization}</strong>
+                  <dl>
+                    <div>
+                      <dt>Contact</dt>
+                      <dd>{demoOrder.vendor.contactName}</dd>
+                    </div>
+                    <div>
+                      <dt>Email</dt>
+                      <dd>{demoOrder.vendor.email}</dd>
+                    </div>
+                    <div>
+                      <dt>Phone</dt>
+                      <dd>{demoOrder.vendor.phone || "Not provided"}</dd>
+                    </div>
+                    <div>
+                      <dt>Website</dt>
+                      <dd>{demoOrder.vendor.website || "Not provided"}</dd>
+                    </div>
+                  </dl>
+                </div>
+              </div>
+            ) : null}
+            <div className="result-actions">
+              <a className="outline-button result-link" href={isDemoCheckout ? `${appBase}?demo=1` : appBase}>
+                {isDemoCheckout ? "Back to demo portal" : "Back to portal"}
+              </a>
+              {isDemoCheckout ? (
+                <>
+                  <button type="button" className="outline-button result-link" onClick={resetDemoAndReturn}>
+                    Reset demo
+                  </button>
+                  <button type="button" className="outline-button result-link" onClick={exitDemoAndReturn}>
+                    Exit demo
+                  </button>
+                </>
+              ) : null}
+            </div>
           </div>
         </section>
       </main>
     </div>
   );
+}
+
+function createInitialCatalog() {
+  return fallbackPackages.map((item, index) => normalizePackage(withInventoryDefaults(item, index)));
 }
 
 function normalizePackage(item) {
@@ -671,6 +881,164 @@ function normalizePackage(item) {
     stockRemaining: item.stockRemaining === undefined ? null : item.stockRemaining,
     active: item.active !== false
   };
+}
+
+function applyDemoInventory(catalog, inventory) {
+  if (!inventory?.items) return catalog;
+  return catalog.map((item) => {
+    const demoItem = inventory.items[item.id];
+    if (!demoItem) return item;
+    return {
+      ...item,
+      stockTotal: demoItem.stockTotal,
+      stockRemaining: demoItem.stockRemaining
+    };
+  });
+}
+
+function ensureStoredDemoInventory(catalog) {
+  const nextInventory = ensureDemoInventory(catalog, readStoredDemoInventory());
+  writeStoredDemoInventory(nextInventory);
+  return nextInventory;
+}
+
+function ensureDemoInventory(catalog, currentInventory) {
+  const safeInventory = currentInventory?.items ? currentInventory : createDemoInventory([]);
+  const items = { ...safeInventory.items };
+
+  catalog.forEach((item) => {
+    if (!items[item.id]) {
+      items[item.id] = inventoryRecordFromItem(item);
+    }
+  });
+
+  return {
+    version: 1,
+    seededAt: safeInventory.seededAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    items
+  };
+}
+
+function createDemoInventory(catalog) {
+  return {
+    version: 1,
+    seededAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    items: Object.fromEntries(catalog.map((item) => [item.id, inventoryRecordFromItem(item)]))
+  };
+}
+
+function inventoryRecordFromItem(item) {
+  return {
+    stockTotal: Number.isInteger(item.stockTotal) ? item.stockTotal : null,
+    stockRemaining: Number.isInteger(item.stockRemaining) ? item.stockRemaining : null
+  };
+}
+
+function reserveDemoInventory(inventory, cartLines) {
+  const items = { ...inventory.items };
+
+  cartLines.forEach((line) => {
+    const current = items[line.id] || inventoryRecordFromItem(line.item);
+    if (!Number.isInteger(current.stockRemaining)) {
+      items[line.id] = current;
+      return;
+    }
+
+    if (current.stockRemaining < line.quantity) {
+      throw new Error(`${line.item.name} no longer has enough demo inventory.`);
+    }
+
+    items[line.id] = {
+      ...current,
+      stockRemaining: current.stockRemaining - line.quantity
+    };
+  });
+
+  return {
+    ...inventory,
+    updatedAt: new Date().toISOString(),
+    items
+  };
+}
+
+function createDemoOrder({ cartLines, total, vendor }) {
+  return {
+    id: `demo_${Date.now().toString(36)}`,
+    createdAt: new Date().toISOString(),
+    vendor: {
+      organization: cleanDemoValue(vendor.organization),
+      contactName: cleanDemoValue(vendor.contactName),
+      email: cleanDemoValue(vendor.email),
+      phone: cleanDemoValue(vendor.phone),
+      website: cleanDemoValue(vendor.website),
+      notes: cleanDemoValue(vendor.notes)
+    },
+    itemCount: cartLines.reduce((sum, line) => sum + line.quantity, 0),
+    total,
+    items: cartLines.map((line) => ({
+      id: line.id,
+      name: line.item.name,
+      quantity: line.quantity,
+      price: line.item.price
+    }))
+  };
+}
+
+function cleanDemoValue(value) {
+  return String(value || "").trim();
+}
+
+function readStoredDemoInventory() {
+  try {
+    const rawValue = window.localStorage.getItem(demoInventoryStorageKey);
+    return rawValue ? JSON.parse(rawValue) : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function writeStoredDemoInventory(inventory) {
+  try {
+    window.localStorage.setItem(demoInventoryStorageKey, JSON.stringify(inventory));
+  } catch (error) {
+    // Demo mode can still run with in-memory inventory if storage is unavailable.
+  }
+}
+
+function writeStoredDemoOrder(order) {
+  try {
+    window.sessionStorage.setItem(demoOrderStorageKey, JSON.stringify(order));
+  } catch (error) {
+    // Receipt details are nice-to-have; checkout state remains visible without them.
+  }
+}
+
+function readStoredDemoOrder() {
+  try {
+    const rawValue = window.sessionStorage.getItem(demoOrderStorageKey);
+    return rawValue ? JSON.parse(rawValue) : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function clearStoredDemoOrder() {
+  try {
+    window.sessionStorage.removeItem(demoOrderStorageKey);
+  } catch (error) {
+    // Ignore storage failures during demo cleanup.
+  }
+}
+
+function clearDemoSandbox() {
+  try {
+    window.localStorage.removeItem(demoInventoryStorageKey);
+  } catch (error) {
+    // Ignore storage failures during demo cleanup.
+  }
+  clearStoredDemoOrder();
 }
 
 function maxQuantityFor(item) {

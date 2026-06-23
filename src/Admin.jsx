@@ -8,8 +8,10 @@ export default function AdminApp({ appBase, Header }) {
   const [password, setPassword] = useState(() => sessionStorage.getItem(storedPasswordKey) || "");
   const [draftPassword, setDraftPassword] = useState("");
   const [packages, setPackages] = useState([]);
-  const [reservations, setReservations] = useState([]);
+  const [orders, setOrders] = useState([]);
   const [category, setCategory] = useState("all");
+  const [orderQuery, setOrderQuery] = useState("");
+  const [orderStatus, setOrderStatus] = useState("all");
   const [status, setStatus] = useState({ type: "idle", message: "" });
   const [loading, setLoading] = useState(false);
 
@@ -17,6 +19,10 @@ export default function AdminApp({ appBase, Header }) {
   const visiblePackages = useMemo(
     () => packages.filter((item) => category === "all" || item.category === category),
     [packages, category]
+  );
+  const visibleOrders = useMemo(
+    () => filterOrders(orders, orderQuery, orderStatus),
+    [orders, orderQuery, orderStatus]
   );
 
   useEffect(() => {
@@ -29,12 +35,12 @@ export default function AdminApp({ appBase, Header }) {
     setLoading(true);
     setStatus({ type: "idle", message: "" });
     try {
-      const [packageData, reservationData] = await Promise.all([
+      const [packageData, orderData] = await Promise.all([
         adminFetch("/api/admin/packages", nextPassword),
-        adminFetch("/api/admin/reservations", nextPassword)
+        adminFetch("/api/admin/orders", nextPassword)
       ]);
       setPackages(packageData.packages.map(toDraftPackage));
-      setReservations(reservationData.reservations || []);
+      setOrders(orderData.orders || []);
       setStatus({ type: "success", message: "Admin catalog loaded." });
     } catch (error) {
       setStatus({ type: "error", message: error.message || "Admin login failed." });
@@ -59,7 +65,7 @@ export default function AdminApp({ appBase, Header }) {
     setPassword("");
     setDraftPassword("");
     setPackages([]);
-    setReservations([]);
+    setOrders([]);
   }
 
   function updatePackage(id, field, value) {
@@ -253,36 +259,151 @@ export default function AdminApp({ appBase, Header }) {
               ))}
             </section>
 
-            <section className="admin-reservations" aria-label="Recent checkout holds">
-              <div className="section-heading">
-                <div>
-                  <p className="section-label">Recent checkout activity</p>
-                  <h2>Reservations</h2>
-                </div>
-              </div>
-              {reservations.length === 0 ? (
-                <p className="empty-cart">No checkout sessions have been created yet.</p>
-              ) : (
-                <div className="reservation-table">
-                  {reservations.map((reservation) => (
-                    <div className="reservation-row" key={reservation.id}>
-                      <div>
-                        <strong>{reservation.organization || "Unknown organization"}</strong>
-                        <span>{reservation.packageSummary}</span>
-                      </div>
-                      <div>
-                        <strong>{reservation.status}</strong>
-                        <span>{formatReservationTime(reservation.createdAt)}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </section>
+            <OrderBook
+              orders={visibleOrders}
+              allOrders={orders}
+              query={orderQuery}
+              status={orderStatus}
+              onQueryChange={setOrderQuery}
+              onStatusChange={setOrderStatus}
+            />
           </>
         )}
       </main>
     </div>
+  );
+}
+
+function OrderBook({ orders, allOrders, query, status, onQueryChange, onStatusChange }) {
+  const paidOrders = allOrders.filter((order) => order.status === "paid");
+  const paidTotal = paidOrders.reduce((sum, order) => sum + Number(order.amountTotal || 0), 0);
+
+  return (
+    <section className="admin-reservations" aria-label="Orders and sponsor follow-up">
+      <div className="section-heading">
+        <div>
+          <p className="section-label">Orders & sponsor follow-up</p>
+          <h2>Vendor order book</h2>
+        </div>
+        <p className="deadline-note">
+          Paid orders are ready for logo, ad, and sponsorship-material follow-up.
+        </p>
+      </div>
+
+      <div className="order-metrics">
+        <Metric value={String(allOrders.length)} label="Total sessions" />
+        <Metric value={String(paidOrders.length)} label="Paid orders" />
+        <Metric value={formatCents(paidTotal)} label="Paid total" />
+      </div>
+
+      <div className="order-toolbar">
+        <label>
+          Search orders
+          <input
+            value={query}
+            onChange={(event) => onQueryChange(event.target.value)}
+            placeholder="Company, contact, email, package, Stripe ID"
+          />
+        </label>
+        <label>
+          Status
+          <select value={status} onChange={(event) => onStatusChange(event.target.value)}>
+            <option value="all">All statuses</option>
+            <option value="paid">Paid</option>
+            <option value="pending">Pending</option>
+            <option value="expired">Expired</option>
+          </select>
+        </label>
+      </div>
+
+      {orders.length === 0 ? (
+        <p className="empty-cart">No matching checkout sessions yet.</p>
+      ) : (
+        <div className="order-list">
+          {orders.map((order) => (
+            <OrderCard key={order.id} order={order} />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function Metric({ value, label }) {
+  return (
+    <div className="order-metric">
+      <strong>{value}</strong>
+      <span>{label}</span>
+    </div>
+  );
+}
+
+function OrderCard({ order }) {
+  const stripeLookup = order.stripePaymentIntentId || order.stripeSessionId || order.stripeInvoiceId;
+  const contactHref = `mailto:${order.email}?subject=${encodeURIComponent(
+    "SWRM 2026 sponsorship logo and materials"
+  )}`;
+
+  return (
+    <article className="order-card">
+      <div className="order-card-main">
+        <div>
+          <p className={`status-pill status-${order.status || "pending"}`}>{order.status || "pending"}</p>
+          <h3>{order.organization || "Unknown organization"}</h3>
+          <p className="order-contact">
+            {order.contactName || "No contact"} ·{" "}
+            <a href={contactHref}>{order.email || "No email"}</a>
+            {order.phone ? ` · ${order.phone}` : ""}
+          </p>
+          {order.website ? (
+            <a className="order-website" href={order.website} target="_blank" rel="noreferrer">
+              {order.website}
+            </a>
+          ) : null}
+        </div>
+        <div className="order-total">
+          <strong>{formatCents(order.amountTotal)}</strong>
+          <span>{formatReservationTime(order.createdAt)}</span>
+        </div>
+      </div>
+
+      <div className="order-items">
+        {(order.items || []).length > 0 ? (
+          order.items.map((item) => (
+            <div className="order-item" key={`${order.id}-${item.packageId}`}>
+              <span>
+                {item.quantity}x {item.name}
+              </span>
+              <strong>{formatCents(Number(item.unitAmount || 0) * Number(item.quantity || 0))}</strong>
+            </div>
+          ))
+        ) : (
+          <p>{order.packageSummary || "No item summary recorded."}</p>
+        )}
+      </div>
+
+      {order.notes ? (
+        <div className="order-notes">
+          <span>Vendor notes</span>
+          <p>{order.notes}</p>
+        </div>
+      ) : null}
+
+      <div className="order-meta">
+        <span>Session {order.stripeSessionId || order.id}</span>
+        {order.paymentStatus ? <span>Payment {order.paymentStatus}</span> : null}
+        {order.stripeInvoiceId ? <span>Invoice {order.stripeInvoiceId}</span> : null}
+        {stripeLookup ? (
+          <a
+            href={`https://dashboard.stripe.com/search?query=${encodeURIComponent(stripeLookup)}`}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Find in Stripe
+          </a>
+        ) : null}
+      </div>
+    </article>
   );
 }
 
@@ -488,4 +609,38 @@ function formatReservationTime(value) {
     hour: "numeric",
     minute: "2-digit"
   }).format(new Date(value * 1000));
+}
+
+function formatCents(value) {
+  const cents = Number(value || 0);
+  return formatCurrency(cents / 100);
+}
+
+function filterOrders(orders, query, status) {
+  const normalizedQuery = query.trim().toLowerCase();
+
+  return orders.filter((order) => {
+    const statusMatches = status === "all" || order.status === status;
+    if (!statusMatches) return false;
+    if (!normalizedQuery) return true;
+
+    const searchable = [
+      order.organization,
+      order.contactName,
+      order.email,
+      order.phone,
+      order.website,
+      order.packageSummary,
+      order.stripeSessionId,
+      order.stripePaymentIntentId,
+      order.stripeInvoiceId,
+      order.notes,
+      ...(order.items || []).flatMap((item) => [item.name, item.packageId, item.category])
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+
+    return searchable.includes(normalizedQuery);
+  });
 }

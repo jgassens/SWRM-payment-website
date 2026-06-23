@@ -181,6 +181,11 @@ async function handleAdmin(request, env, origin, url) {
     return jsonResponse({ reservations }, { origin });
   }
 
+  if (url.pathname === "/api/admin/orders" && request.method === "GET") {
+    const orders = await listOrders(env);
+    return jsonResponse({ orders }, { origin });
+  }
+
   if (url.pathname === "/api/admin/release-expired" && request.method === "POST") {
     const released = await releaseExpiredReservations(env);
     return jsonResponse({ released }, { origin });
@@ -195,6 +200,8 @@ async function createCheckoutSession(env, items, vendor, reservationId) {
 
   form.set("mode", "payment");
   form.set("customer_email", vendor.email);
+  form.set("payment_intent_data[receipt_email]", vendor.email);
+  form.set("invoice_creation[enabled]", "true");
   form.set("client_reference_id", reservationId);
   form.set("success_url", `${frontendUrl}/?checkout=success&session_id={CHECKOUT_SESSION_ID}`);
   form.set("cancel_url", `${frontendUrl}/?checkout=cancel`);
@@ -203,6 +210,7 @@ async function createCheckoutSession(env, items, vendor, reservationId) {
   form.set("metadata[contact_name]", vendor.contactName);
   form.set("metadata[phone]", vendor.phone || "");
   form.set("metadata[website]", vendor.website || "");
+  form.set("metadata[notes]", vendor.notes || "");
   form.set(
     "metadata[package_summary]",
     summarizeItems(items).slice(0, 500)
@@ -276,7 +284,7 @@ async function handleStripeWebhook(request, env) {
   }
 
   if (event.type === "checkout.session.completed" || event.type === "checkout.session.async_payment_succeeded") {
-    await markReservationStatus(env, reservationId, "paid");
+    await recordCompletedCheckout(env, reservationId, session);
   }
 
   if (event.type === "checkout.session.expired" || event.type === "checkout.session.async_payment_failed") {
@@ -365,12 +373,13 @@ async function recordReservation(env, reservationId, session, items, vendor) {
   if (!env.DB) return;
 
   const now = Math.floor(Date.now() / 1000);
+  const amountTotal = sumItems(items);
   await env.DB.prepare(`
     INSERT INTO checkout_sessions (
       id, stripe_session_id, status, organization, contact_name, email, phone, website,
-      package_summary, created_at, expires_at, updated_at
+      notes, package_summary, amount_total, currency, payment_status, created_at, expires_at, updated_at
     )
-    VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, 'usd', ?, ?, ?, ?)
   `).bind(
     reservationId,
     session.id || "",
@@ -379,7 +388,10 @@ async function recordReservation(env, reservationId, session, items, vendor) {
     vendor.email,
     vendor.phone || "",
     vendor.website || "",
+    vendor.notes || "",
     summarizeItems(items),
+    amountTotal,
+    session.payment_status || "unpaid",
     now,
     session.expires_at || null,
     now
@@ -387,9 +399,9 @@ async function recordReservation(env, reservationId, session, items, vendor) {
 
   const statements = items.map(({ item, quantity }) =>
     env.DB.prepare(`
-      INSERT INTO checkout_items (session_id, package_id, quantity, unit_amount)
-      VALUES (?, ?, ?, ?)
-    `).bind(reservationId, item.id, quantity, item.priceCents)
+      INSERT INTO checkout_items (session_id, package_id, item_name, package_category, quantity, unit_amount)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).bind(reservationId, item.id, item.name, item.category, quantity, item.priceCents)
   );
 
   if (statements.length > 0) {
@@ -421,6 +433,114 @@ async function listReservations(env) {
     expiresAt: row.expires_at,
     updatedAt: row.updated_at
   }));
+}
+
+async function listOrders(env) {
+  if (!env.DB) return [];
+  await ensureSchema(env.DB);
+
+  const { results } = await env.DB.prepare(`
+    SELECT id, stripe_session_id, status, payment_status, organization, contact_name, email,
+           phone, website, notes, package_summary, amount_total, currency,
+           stripe_payment_intent_id, stripe_customer_id, stripe_invoice_id,
+           stripe_customer_name, stripe_customer_email, stripe_customer_phone,
+           billing_address_json, created_at, expires_at, updated_at
+    FROM checkout_sessions
+    ORDER BY created_at DESC
+    LIMIT 200
+  `).all();
+
+  if (results.length === 0) return [];
+
+  const placeholders = results.map(() => "?").join(", ");
+  const { results: itemRows } = await env.DB.prepare(`
+    SELECT ci.session_id, ci.package_id,
+           COALESCE(NULLIF(ci.item_name, ''), p.name, ci.package_id) AS item_name,
+           COALESCE(NULLIF(ci.package_category, ''), p.category, '') AS package_category,
+           ci.quantity, ci.unit_amount
+    FROM checkout_items ci
+    LEFT JOIN packages p ON p.id = ci.package_id
+    WHERE ci.session_id IN (${placeholders})
+    ORDER BY ci.session_id, item_name
+  `).bind(...results.map((row) => row.id)).all();
+
+  const itemsBySession = new Map();
+  itemRows.forEach((row) => {
+    const current = itemsBySession.get(row.session_id) || [];
+    current.push({
+      packageId: row.package_id,
+      name: row.item_name,
+      category: row.package_category,
+      quantity: Number(row.quantity || 0),
+      unitAmount: Number(row.unit_amount || 0)
+    });
+    itemsBySession.set(row.session_id, current);
+  });
+
+  return results.map((row) => ({
+    id: row.id,
+    stripeSessionId: row.stripe_session_id,
+    status: row.status,
+    paymentStatus: row.payment_status || "",
+    organization: row.organization,
+    contactName: row.contact_name,
+    email: row.email,
+    phone: row.phone,
+    website: row.website,
+    notes: row.notes || "",
+    packageSummary: row.package_summary,
+    amountTotal: Number(row.amount_total || 0),
+    currency: row.currency || "usd",
+    stripePaymentIntentId: row.stripe_payment_intent_id || "",
+    stripeCustomerId: row.stripe_customer_id || "",
+    stripeInvoiceId: row.stripe_invoice_id || "",
+    stripeCustomerName: row.stripe_customer_name || "",
+    stripeCustomerEmail: row.stripe_customer_email || "",
+    stripeCustomerPhone: row.stripe_customer_phone || "",
+    billingAddress: parseObject(row.billing_address_json),
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    updatedAt: row.updated_at,
+    items: itemsBySession.get(row.id) || []
+  }));
+}
+
+async function recordCompletedCheckout(env, reservationId, session) {
+  if (!env.DB || !reservationId) return;
+
+  const now = Math.floor(Date.now() / 1000);
+  const customerDetails = session?.customer_details || {};
+  const billingAddress = customerDetails.address || {};
+
+  await env.DB.prepare(`
+    UPDATE checkout_sessions
+    SET status = 'paid',
+        payment_status = ?,
+        amount_total = COALESCE(?, amount_total),
+        currency = COALESCE(NULLIF(?, ''), currency),
+        stripe_payment_intent_id = ?,
+        stripe_customer_id = ?,
+        stripe_invoice_id = ?,
+        stripe_customer_name = ?,
+        stripe_customer_email = ?,
+        stripe_customer_phone = ?,
+        billing_address_json = ?,
+        updated_at = ?
+    WHERE id = ?
+  `).bind(
+    session.payment_status || "paid",
+    Number.isInteger(session.amount_total) ? session.amount_total : null,
+    String(session.currency || "").toLowerCase(),
+    stripeObjectId(session.payment_intent),
+    stripeObjectId(session.customer),
+    stripeObjectId(session.invoice),
+    clean(customerDetails.name, 500),
+    clean(customerDetails.email, 500),
+    clean(customerDetails.phone, 500),
+    JSON.stringify(billingAddress || {}),
+    now,
+    reservationId
+  ).run();
 }
 
 async function updatePackage(env, id, body) {
@@ -646,7 +766,18 @@ async function ensureSchema(db) {
       email TEXT NOT NULL DEFAULT '',
       phone TEXT NOT NULL DEFAULT '',
       website TEXT NOT NULL DEFAULT '',
+      notes TEXT NOT NULL DEFAULT '',
       package_summary TEXT NOT NULL DEFAULT '',
+      amount_total INTEGER NOT NULL DEFAULT 0,
+      currency TEXT NOT NULL DEFAULT 'usd',
+      payment_status TEXT NOT NULL DEFAULT '',
+      stripe_payment_intent_id TEXT NOT NULL DEFAULT '',
+      stripe_customer_id TEXT NOT NULL DEFAULT '',
+      stripe_invoice_id TEXT NOT NULL DEFAULT '',
+      stripe_customer_name TEXT NOT NULL DEFAULT '',
+      stripe_customer_email TEXT NOT NULL DEFAULT '',
+      stripe_customer_phone TEXT NOT NULL DEFAULT '',
+      billing_address_json TEXT NOT NULL DEFAULT '{}',
       created_at INTEGER NOT NULL,
       expires_at INTEGER,
       updated_at INTEGER NOT NULL
@@ -654,6 +785,8 @@ async function ensureSchema(db) {
     `CREATE TABLE IF NOT EXISTS checkout_items (
       session_id TEXT NOT NULL,
       package_id TEXT NOT NULL,
+      item_name TEXT NOT NULL DEFAULT '',
+      package_category TEXT NOT NULL DEFAULT '',
       quantity INTEGER NOT NULL CHECK (quantity > 0),
       unit_amount INTEGER NOT NULL CHECK (unit_amount >= 0),
       PRIMARY KEY (session_id, package_id)
@@ -787,14 +920,35 @@ function summarizeItems(items) {
   return items.map(({ item, quantity }) => `${quantity}x ${item.name}`).join("; ");
 }
 
+function sumItems(items) {
+  return items.reduce((sum, { item, quantity }) => sum + item.priceCents * quantity, 0);
+}
+
 function normalizeVendor(vendor = {}) {
   return {
     organization: clean(vendor.organization, 500),
     contactName: clean(vendor.contactName, 500),
     email: clean(vendor.email, 500),
     phone: clean(vendor.phone, 500),
-    website: clean(vendor.website, 500)
+    website: clean(vendor.website, 500),
+    notes: clean(vendor.notes, 1000)
   };
+}
+
+function parseObject(value) {
+  try {
+    const parsed = JSON.parse(value || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function stripeObjectId(value) {
+  if (!value) return "";
+  if (typeof value === "string") return clean(value, 500);
+  if (typeof value === "object" && value.id) return clean(value.id, 500);
+  return "";
 }
 
 function clean(value, max = 500) {
@@ -904,7 +1058,7 @@ function resolveAllowedOrigin(origin, env) {
 
 function corsHeaders(origin) {
   const headers = {
-    "Access-Control-Allow-Methods": "GET,POST,PUT,OPTIONS",
+    "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
     "Access-Control-Allow-Headers": "Authorization,Content-Type",
     Vary: "Origin"
   };
