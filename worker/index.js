@@ -1,4 +1,4 @@
-import { packages as seedPackages, withInventoryDefaults } from "../src/catalog.js";
+import { categories, packages as seedPackages, withInventoryDefaults } from "../src/catalog.js";
 
 const stripeApiVersion = "2026-02-25.clover";
 const defaultAllowedOrigins = [
@@ -6,11 +6,20 @@ const defaultAllowedOrigins = [
   "http://localhost:5180",
   "https://jgassens.github.io"
 ];
+const validCategoryIds = new Set(categories.map((category) => category.id));
 
 class InventoryError extends Error {
   constructor(message) {
     super(message);
     this.name = "InventoryError";
+  }
+}
+
+class HttpError extends Error {
+  constructor(message, status = 400) {
+    super(message);
+    this.name = "HttpError";
+    this.status = status;
   }
 }
 
@@ -67,7 +76,8 @@ export default {
 
       return jsonResponse({ error: "Not found." }, { status: 404, origin: allowedOrigin });
     } catch (error) {
-      const status = error instanceof InventoryError ? 409 : 500;
+      const status =
+        error instanceof InventoryError ? 409 : error instanceof HttpError ? error.status : 500;
       console.error(
         JSON.stringify({
           level: status === 409 ? "warn" : "error",
@@ -80,7 +90,7 @@ export default {
       return jsonResponse(
         {
           error:
-            error instanceof InventoryError
+            error instanceof InventoryError || error instanceof HttpError
               ? error.message
               : "Request could not be completed. Please try again."
         },
@@ -148,11 +158,22 @@ async function handleAdmin(request, env, origin, url) {
     return jsonResponse({ packages }, { origin });
   }
 
+  if (url.pathname === "/api/admin/packages" && request.method === "POST") {
+    const body = await request.json().catch(() => null);
+    const created = await createPackage(env, body || {});
+    return jsonResponse({ package: created }, { status: 201, origin });
+  }
+
   const packageMatch = url.pathname.match(/^\/api\/admin\/packages\/([^/]+)$/);
   if (packageMatch && request.method === "PUT") {
     const body = await request.json().catch(() => null);
     const updated = await updatePackage(env, decodeURIComponent(packageMatch[1]), body || {});
     return jsonResponse({ package: updated }, { origin });
+  }
+
+  if (packageMatch && request.method === "DELETE") {
+    const deleted = await deletePackage(env, decodeURIComponent(packageMatch[1]));
+    return jsonResponse({ package: deleted }, { origin });
   }
 
   if (url.pathname === "/api/admin/reservations" && request.method === "GET") {
@@ -407,53 +428,99 @@ async function updatePackage(env, id, body) {
   await ensureSeeded(env.DB);
 
   const current = await env.DB.prepare("SELECT id FROM packages WHERE id = ?").bind(id).first();
-  if (!current) throw new Error("Package not found.");
-
-  const priceCents = clampInteger(body.priceCents, 0, 100000000);
-  const stockTotal = nullableInteger(body.stockTotal);
-  let stockRemaining = nullableInteger(body.stockRemaining);
-
-  if (stockTotal === null) {
-    stockRemaining = null;
-  } else if (stockRemaining === null) {
-    stockRemaining = stockTotal;
-  } else if (stockRemaining > stockTotal) {
-    throw new Error("Remaining inventory cannot be greater than total stock.");
-  }
+  if (!current) throw new HttpError("Package not found.", 404);
+  const payload = normalizePackagePayload(body);
 
   await env.DB.prepare(`
     UPDATE packages
-    SET name = ?,
+    SET category = ?,
+        name = ?,
         label = ?,
         price_cents = ?,
         availability = ?,
         summary = ?,
+        included_json = ?,
         stock_total = ?,
         stock_remaining = ?,
         active = ?,
+        sort_order = ?,
         updated_at = ?
     WHERE id = ?
   `).bind(
-    clean(body.name, 160),
-    clean(body.label, 160),
-    priceCents,
-    clean(body.availability, 160),
-    clean(body.summary, 700),
-    stockTotal,
-    stockRemaining,
-    body.active === false ? 0 : 1,
+    payload.category,
+    payload.name,
+    payload.label,
+    payload.priceCents,
+    payload.availability,
+    payload.summary,
+    JSON.stringify(payload.included),
+    payload.stockTotal,
+    payload.stockRemaining,
+    payload.active ? 1 : 0,
+    payload.sortOrder,
     new Date().toISOString(),
     id
   ).run();
 
-  const row = await env.DB.prepare(`
+  return await getPackageById(env.DB, id);
+}
+
+async function createPackage(env, body) {
+  if (!env.DB) throw new Error("D1 is not configured.");
+  await ensureSeeded(env.DB);
+
+  const payload = normalizePackagePayload(body);
+  const id = await uniquePackageId(env.DB, slugify(body.id || payload.name));
+  const sortOrder =
+    body.sortOrder === "" || body.sortOrder === null || body.sortOrder === undefined
+      ? await nextSortOrder(env.DB)
+      : payload.sortOrder;
+
+  await env.DB.prepare(`
+    INSERT INTO packages (
+      id, category, name, label, price_cents, availability, summary, included_json,
+      stock_total, stock_remaining, active, sort_order, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    id,
+    payload.category,
+    payload.name,
+    payload.label,
+    payload.priceCents,
+    payload.availability,
+    payload.summary,
+    JSON.stringify(payload.included),
+    payload.stockTotal,
+    payload.stockRemaining,
+    payload.active ? 1 : 0,
+    sortOrder,
+    new Date().toISOString()
+  ).run();
+
+  return await getPackageById(env.DB, id);
+}
+
+async function deletePackage(env, id) {
+  if (!env.DB) throw new Error("D1 is not configured.");
+  await ensureSeeded(env.DB);
+
+  const current = await getPackageById(env.DB, id);
+  if (!current) throw new HttpError("Package not found.", 404);
+
+  await env.DB.prepare("DELETE FROM packages WHERE id = ?").bind(id).run();
+  return current;
+}
+
+async function getPackageById(db, id) {
+  const row = await db.prepare(`
     SELECT id, category, name, label, price_cents, availability, summary, included_json,
            stock_total, stock_remaining, active, sort_order, updated_at
     FROM packages
     WHERE id = ?
   `).bind(id).first();
 
-  return mapPackageRow(row);
+  return row ? mapPackageRow(row) : null;
 }
 
 async function releaseExpiredReservations(env) {
@@ -646,6 +713,74 @@ function parseIncluded(value) {
   } catch {
     return [];
   }
+}
+
+function normalizePackagePayload(body = {}) {
+  const category = clean(body.category, 80);
+  const name = clean(body.name, 160);
+  const stockTotal = nullableInteger(body.stockTotal);
+  let stockRemaining = nullableInteger(body.stockRemaining);
+
+  if (!validCategoryIds.has(category)) {
+    throw new HttpError("Choose a valid package category.");
+  }
+
+  if (!name) {
+    throw new HttpError("Package name is required.");
+  }
+
+  if (stockTotal === null) {
+    stockRemaining = null;
+  } else if (stockRemaining === null) {
+    stockRemaining = stockTotal;
+  } else if (stockRemaining > stockTotal) {
+    throw new HttpError("Remaining inventory cannot be greater than total stock.");
+  }
+
+  return {
+    category,
+    name,
+    label: clean(body.label, 160),
+    priceCents: clampInteger(body.priceCents, 0, 100000000),
+    availability: clean(body.availability, 160),
+    summary: clean(body.summary, 700),
+    included: normalizeIncluded(body.included),
+    stockTotal,
+    stockRemaining,
+    active: body.active === false ? false : true,
+    sortOrder: clampInteger(body.sortOrder, 0, 1000000)
+  };
+}
+
+function normalizeIncluded(value) {
+  const rawItems = Array.isArray(value) ? value : String(value || "").split("\n");
+  return rawItems.map((item) => clean(item, 220)).filter(Boolean).slice(0, 12);
+}
+
+async function uniquePackageId(db, baseId) {
+  const base = baseId || `custom-${crypto.randomUUID().slice(0, 8)}`;
+
+  for (let index = 0; index < 100; index += 1) {
+    const candidate = index === 0 ? base : `${base}-${index + 1}`;
+    const current = await db.prepare("SELECT id FROM packages WHERE id = ?").bind(candidate).first();
+    if (!current) return candidate;
+  }
+
+  return `${base}-${crypto.randomUUID().slice(0, 8)}`;
+}
+
+async function nextSortOrder(db) {
+  const row = await db.prepare("SELECT COALESCE(MAX(sort_order), 0) + 10 AS next_order FROM packages").first();
+  return Number(row?.next_order || 10);
+}
+
+function slugify(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
 }
 
 function summarizeItems(items) {

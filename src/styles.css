@@ -58,6 +58,7 @@ body {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
 }
@@ -554,7 +555,8 @@ label {
   text-transform: uppercase;
 }
 
-input {
+input,
+select {
   width: 100%;
   min-height: 42px;
   margin-top: 6px;
@@ -567,7 +569,12 @@ input {
   letter-spacing: 0;
 }
 
-input:focus {
+select {
+  appearance: none;
+}
+
+input:focus,
+select:focus {
   outline: 2px solid rgba(17, 141, 150, 0.28);
   border-color: var(--teal-bright);
 }
@@ -871,6 +878,25 @@ textarea:focus {
   font-weight: 700;
 }
 
+.admin-card-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.danger-button {
+  border-color: #9d2d21;
+  color: #9d2d21;
+}
+
+.danger-button:hover,
+.danger-button:focus-visible {
+  background: #9d2d21;
+  color: white;
+}
+
 .admin-form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -997,9 +1023,14 @@ textarea:focus {
   .booth-options-grid,
   .package-grid,
   .form-grid,
+  .admin-card-footer,
   .admin-form-grid,
   .reservation-row {
     grid-template-columns: 1fr;
+  }
+
+  .admin-card-actions {
+    justify-content: flex-start;
   }
 
   .booth-step,

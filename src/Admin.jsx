@@ -62,31 +62,83 @@ export default function AdminApp({ appBase, Header }) {
     );
   }
 
+  function addPackageDraft() {
+    const selectedCategory = category === "all" ? "booths" : category;
+    const sortOrder = packages.reduce((max, item) => Math.max(max, Number(item.sortOrder || 0)), 0) + 10;
+    const draft = toDraftPackage({
+      id: `draft-${Date.now()}`,
+      category: selectedCategory,
+      name: "New sponsorship card",
+      label: "",
+      price: 0,
+      priceCents: 0,
+      availability: "available",
+      summary: "",
+      included: [],
+      stockTotal: null,
+      stockRemaining: null,
+      active: false,
+      sortOrder
+    });
+
+    setCategory(selectedCategory);
+    setPackages((current) => [{ ...draft, isNew: true, dirty: true }, ...current]);
+    setStatus({
+      type: "success",
+      message: "New draft card added. Fill it in, turn Live on when ready, then save."
+    });
+  }
+
   async function savePackage(item) {
     setStatus({ type: "idle", message: "" });
     try {
       const payload = {
+        category: item.category,
         name: item.name,
         label: item.label,
         priceCents: dollarsToCents(item.price),
         availability: item.availability,
         summary: item.summary,
+        included: includedTextToArray(item.includedText),
         stockTotal: parseNullableInteger(item.stockTotal),
         stockRemaining: parseNullableInteger(item.stockRemaining),
-        active: item.active
+        active: item.active,
+        sortOrder: parseNullableInteger(item.sortOrder) || 0
       };
 
-      const data = await adminFetch(`/api/admin/packages/${encodeURIComponent(item.id)}`, password, {
-        method: "PUT",
+      const data = await adminFetch(item.isNew ? "/api/admin/packages" : `/api/admin/packages/${encodeURIComponent(item.id)}`, password, {
+        method: item.isNew ? "POST" : "PUT",
         body: JSON.stringify(payload)
       });
 
       setPackages((current) =>
         current.map((row) => (row.id === item.id ? toDraftPackage(data.package) : row))
       );
-      setStatus({ type: "success", message: `${item.name} saved.` });
+      setStatus({ type: "success", message: `${data.package.name} saved.` });
     } catch (error) {
       setStatus({ type: "error", message: error.message || "Package could not be saved." });
+    }
+  }
+
+  async function deletePackage(item) {
+    if (item.isNew) {
+      setPackages((current) => current.filter((row) => row.id !== item.id));
+      setStatus({ type: "success", message: "Draft card removed." });
+      return;
+    }
+
+    const confirmed = window.confirm(`Delete "${item.name}" from the sponsorship catalog?`);
+    if (!confirmed) return;
+
+    setStatus({ type: "idle", message: "" });
+    try {
+      await adminFetch(`/api/admin/packages/${encodeURIComponent(item.id)}`, password, {
+        method: "DELETE"
+      });
+      setPackages((current) => current.filter((row) => row.id !== item.id));
+      setStatus({ type: "success", message: `${item.name} deleted.` });
+    } catch (error) {
+      setStatus({ type: "error", message: error.message || "Package could not be deleted." });
     }
   }
 
@@ -168,6 +220,9 @@ export default function AdminApp({ appBase, Header }) {
                 ))}
               </div>
               <div className="admin-command-row">
+                <button type="button" className="checkout-button compact-button" onClick={addPackageDraft}>
+                  New card
+                </button>
                 <button type="button" className="outline-button compact-button" onClick={() => loadAdmin(password)}>
                   Refresh
                 </button>
@@ -187,6 +242,7 @@ export default function AdminApp({ appBase, Header }) {
                   item={item}
                   onChange={updatePackage}
                   onSave={savePackage}
+                  onDelete={deletePackage}
                 />
               ))}
             </section>
@@ -224,14 +280,14 @@ export default function AdminApp({ appBase, Header }) {
   );
 }
 
-function PackageEditor({ item, onChange, onSave }) {
+function PackageEditor({ item, onChange, onSave, onDelete }) {
   const finiteStock = item.stockTotal !== "";
 
   return (
     <article className={item.active ? "admin-card" : "admin-card inactive"}>
       <div className="admin-card-header">
         <div>
-          <p className="section-label">{item.category}</p>
+          <p className="section-label">{item.isNew ? "New card" : item.category}</p>
           <h3>{item.name}</h3>
         </div>
         <label className="toggle-label">
@@ -245,6 +301,19 @@ function PackageEditor({ item, onChange, onSave }) {
       </div>
 
       <div className="admin-form-grid">
+        <label>
+          Category
+          <select
+            value={item.category}
+            onChange={(event) => onChange(item.id, "category", event.target.value)}
+          >
+            {categories.map((categoryOption) => (
+              <option key={categoryOption.id} value={categoryOption.id}>
+                {categoryOption.label}
+              </option>
+            ))}
+          </select>
+        </label>
         <label>
           Price
           <input
@@ -283,6 +352,16 @@ function PackageEditor({ item, onChange, onSave }) {
           />
         </label>
         <label>
+          Sort order
+          <input
+            type="number"
+            min="0"
+            step="1"
+            value={item.sortOrder}
+            onChange={(event) => onChange(item.id, "sortOrder", event.target.value)}
+          />
+        </label>
+        <label>
           Label
           <input
             value={item.label}
@@ -303,6 +382,14 @@ function PackageEditor({ item, onChange, onSave }) {
             onChange={(event) => onChange(item.id, "summary", event.target.value)}
           />
         </label>
+        <label className="span-all">
+          Included bullets
+          <textarea
+            value={item.includedText}
+            placeholder="One bullet per line"
+            onChange={(event) => onChange(item.id, "includedText", event.target.value)}
+          />
+        </label>
       </div>
 
       <div className="admin-card-footer">
@@ -311,14 +398,23 @@ function PackageEditor({ item, onChange, onSave }) {
             ? "Unlimited inventory"
             : `${item.stockRemaining || 0} remaining`}
         </span>
-        <button
-          type="button"
-          className="outline-button compact-button"
-          disabled={!item.dirty}
-          onClick={() => onSave(item)}
-        >
-          Save
-        </button>
+        <div className="admin-card-actions">
+          <button
+            type="button"
+            className="outline-button compact-button danger-button"
+            onClick={() => onDelete(item)}
+          >
+            Delete
+          </button>
+          <button
+            type="button"
+            className="outline-button compact-button"
+            disabled={!item.dirty}
+            onClick={() => onSave(item)}
+          >
+            {item.isNew ? "Create" : "Save"}
+          </button>
+        </div>
       </div>
     </article>
   );
@@ -347,11 +443,15 @@ async function adminFetch(path, password, options = {}) {
 function toDraftPackage(item) {
   return {
     ...item,
+    category: item.category || categories[0].id,
     price: String(Math.round(Number(item.price || 0))),
     stockTotal: item.stockTotal === null || item.stockTotal === undefined ? "" : String(item.stockTotal),
     stockRemaining:
       item.stockRemaining === null || item.stockRemaining === undefined ? "" : String(item.stockRemaining),
     label: item.label || "",
+    summary: item.summary || "",
+    includedText: Array.isArray(item.included) ? item.included.join("\n") : "",
+    sortOrder: item.sortOrder === null || item.sortOrder === undefined ? "0" : String(item.sortOrder),
     dirty: false
   };
 }
@@ -365,6 +465,13 @@ function parseNullableInteger(value) {
 function dollarsToCents(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.max(0, Math.round(parsed * 100)) : 0;
+}
+
+function includedTextToArray(value) {
+  return String(value || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
 }
 
 function formatReservationTime(value) {
