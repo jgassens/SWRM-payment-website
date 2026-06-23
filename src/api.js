@@ -13,6 +13,8 @@ export const checkoutEndpoint =
 export const demoCheckoutEndpoint =
   import.meta.env.VITE_DEMO_CHECKOUT_API_URL || apiUrl("/api/create-demo-checkout-session");
 
+export const confirmCheckoutEndpoint = apiUrl("/api/confirm-checkout-session");
+
 export async function readJson(response) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {

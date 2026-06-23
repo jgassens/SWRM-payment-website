@@ -69,6 +69,10 @@ export default {
         return await handleDemoCheckout(request, env, allowedOrigin);
       }
 
+      if (url.pathname === "/api/confirm-checkout-session" && request.method === "POST") {
+        return await handleConfirmCheckoutSession(request, env, allowedOrigin);
+      }
+
       if (url.pathname === "/api/stripe-webhook" && request.method === "POST") {
         return await handleStripeWebhook(request, env);
       }
@@ -202,6 +206,47 @@ async function handleDemoCheckout(request, env, origin) {
   );
 }
 
+async function handleConfirmCheckoutSession(request, env, origin) {
+  if (!env.STRIPE_SECRET_KEY) {
+    return jsonResponse(
+      { error: "Stripe checkout is not configured." },
+      { status: 503, origin }
+    );
+  }
+
+  const body = await request.json().catch(() => null);
+  const sessionId = clean(body?.sessionId, 500);
+
+  if (!sessionId || !sessionId.startsWith("cs_")) {
+    return jsonResponse(
+      { error: "A valid Stripe Checkout Session ID is required." },
+      { status: 400, origin }
+    );
+  }
+
+  const session = await retrieveCheckoutSession(env, sessionId, env.STRIPE_SECRET_KEY);
+  const reservationId = session?.metadata?.reservation_id || (await findReservationId(env, session.id));
+  const paid = isPaidCheckoutSession(session);
+  let recorded = false;
+
+  if (reservationId && paid) {
+    await recordCompletedCheckout(env, reservationId, session);
+    recorded = true;
+  }
+
+  return jsonResponse(
+    {
+      recorded,
+      paid,
+      reservationId: reservationId || "",
+      sessionId: session.id || sessionId,
+      status: session.status || "",
+      paymentStatus: session.payment_status || ""
+    },
+    { origin }
+  );
+}
+
 async function handleAdmin(request, env, origin, url) {
   if (url.pathname === "/api/admin/packages" && request.method === "GET") {
     const packages = await listPackages(env, { activeOnly: false });
@@ -321,6 +366,36 @@ async function createCheckoutSession(env, items, vendor, reservationId, options 
       })
     );
     throw new Error("Stripe rejected the Checkout Session request.");
+  }
+
+  return data;
+}
+
+async function retrieveCheckoutSession(env, sessionId, stripeSecret) {
+  const url = new URL(`https://api.stripe.com/v1/checkout/sessions/${encodeURIComponent(sessionId)}`);
+  url.searchParams.append("expand[]", "payment_intent");
+  url.searchParams.append("expand[]", "customer");
+  url.searchParams.append("expand[]", "invoice");
+
+  const response = await fetch(url.toString(), {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${stripeSecret}`,
+      "Stripe-Version": stripeApiVersion
+    }
+  });
+  const data = await response.json();
+
+  if (!response.ok) {
+    console.error(
+      JSON.stringify({
+        level: "warn",
+        message: "stripe_session_retrieve_rejected",
+        status: response.status,
+        stripeError: data?.error?.type || "unknown"
+      })
+    );
+    throw new HttpError("Stripe could not confirm that Checkout Session.", 502);
   }
 
   return data;
@@ -579,6 +654,7 @@ async function recordCompletedCheckout(env, reservationId, session) {
   await env.DB.prepare(`
     UPDATE checkout_sessions
     SET status = 'paid',
+        stripe_session_id = COALESCE(NULLIF(?, ''), stripe_session_id),
         payment_status = ?,
         amount_total = COALESCE(?, amount_total),
         currency = COALESCE(NULLIF(?, ''), currency),
@@ -592,6 +668,7 @@ async function recordCompletedCheckout(env, reservationId, session) {
         updated_at = ?
     WHERE id = ?
   `).bind(
+    clean(session.id, 500),
     session.payment_status || "paid",
     Number.isInteger(session.amount_total) ? session.amount_total : null,
     String(session.currency || "").toLowerCase(),
@@ -1013,6 +1090,10 @@ function stripeObjectId(value) {
   if (typeof value === "string") return clean(value, 500);
   if (typeof value === "object" && value.id) return clean(value.id, 500);
   return "";
+}
+
+function isPaidCheckoutSession(session) {
+  return session?.payment_status === "paid" || session?.payment_status === "no_payment_required";
 }
 
 function clean(value, max = 500) {

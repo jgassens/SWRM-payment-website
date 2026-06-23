@@ -371,6 +371,9 @@ function Metric({ value, label }) {
 
 function OrderCard({ order }) {
   const stripeLookup = order.stripePaymentIntentId || order.stripeSessionId || order.stripeInvoiceId;
+  const stripeSearchUrl = order.isDemo
+    ? "https://dashboard.stripe.com/test/search"
+    : "https://dashboard.stripe.com/search";
   const contactHref = `mailto:${order.email}?subject=${encodeURIComponent(
     "SWRM 2026 sponsorship logo and materials"
   )}`;
@@ -427,7 +430,7 @@ function OrderCard({ order }) {
         {order.stripeInvoiceId ? <span>Invoice {order.stripeInvoiceId}</span> : null}
         {stripeLookup ? (
           <a
-            href={`https://dashboard.stripe.com/search?query=${encodeURIComponent(stripeLookup)}`}
+            href={`${stripeSearchUrl}?query=${encodeURIComponent(stripeLookup)}`}
             target="_blank"
             rel="noreferrer"
           >
@@ -645,9 +648,9 @@ function toDemoOrder(order) {
 
   return {
     id: order.id,
-    stripeSessionId: "",
+    stripeSessionId: order.stripeSessionId || "",
     status: "demo",
-    paymentStatus: "simulated",
+    paymentStatus: order.paymentStatus || (order.completedAt ? "paid" : "simulated"),
     organization: order.vendor?.organization || "Demo organization",
     contactName: order.vendor?.contactName || "",
     email: order.vendor?.email || "",

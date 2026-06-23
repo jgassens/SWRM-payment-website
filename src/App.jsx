@@ -1,6 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
 import AdminApp from "./Admin.jsx";
-import { apiUrl, checkoutEndpoint, demoCheckoutEndpoint, readJson } from "./api.js";
+import {
+  apiUrl,
+  checkoutEndpoint,
+  confirmCheckoutEndpoint,
+  demoCheckoutEndpoint,
+  readJson
+} from "./api.js";
 import { categories, formatCurrency, packages as fallbackPackages, withInventoryDefaults } from "./catalog.js";
 
 const appBase = import.meta.env.BASE_URL || "/";
@@ -776,9 +782,14 @@ function CheckoutResult({ status, isDemoMode = false }) {
   const isMock = params.get("mock") === "1";
   const isDemoCheckout = isDemoMode || isMock;
   const isSuccess = status === "success";
+  const stripeSessionId = params.get("session_id") || "";
   const [demoOrder, setDemoOrder] = useState(() =>
     isDemoCheckout ? readStoredDemoOrder() || readPendingDemoOrder() : null
   );
+  const [purchaseRecordState, setPurchaseRecordState] = useState({
+    status: isSuccess && !isDemoCheckout ? "loading" : "idle",
+    message: ""
+  });
 
   useEffect(() => {
     if (!isDemoCheckout) return;
@@ -789,6 +800,52 @@ function CheckoutResult({ status, isDemoMode = false }) {
     const finalizedOrder = finalizeDemoCheckout();
     if (finalizedOrder) setDemoOrder(finalizedOrder);
   }, [isSuccess, isDemoCheckout]);
+
+  useEffect(() => {
+    if (!isSuccess || isDemoCheckout) return;
+
+    if (!stripeSessionId) {
+      setPurchaseRecordState({
+        status: "error",
+        message: "Stripe did not return a session id on this success page."
+      });
+      return;
+    }
+
+    let canceled = false;
+
+    async function confirmPurchaseRecord() {
+      try {
+        const response = await fetch(confirmCheckoutEndpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId: stripeSessionId })
+        });
+        const data = await readJson(response);
+        if (canceled) return;
+
+        setPurchaseRecordState({
+          status: data.recorded ? "success" : "pending",
+          message: data.recorded
+            ? `SWRM order book marked paid from Stripe session ${data.sessionId}.`
+            : data.paid
+              ? `Stripe says this payment is ${data.paymentStatus || "paid"}, but it was not matched to an SWRM order record.`
+              : `Stripe session ${data.sessionId} is ${data.paymentStatus || data.status || "pending"}; the order book will update when payment completes.`
+        });
+      } catch (error) {
+        if (canceled) return;
+        setPurchaseRecordState({
+          status: "error",
+          message: error.message || "Stripe confirmation could not update the SWRM order book."
+        });
+      }
+    }
+
+    confirmPurchaseRecord();
+    return () => {
+      canceled = true;
+    };
+  }, [isSuccess, isDemoCheckout, stripeSessionId]);
 
   function resetDemoAndReturn() {
     clearDemoSandbox();
@@ -856,6 +913,15 @@ function CheckoutResult({ status, isDemoMode = false }) {
                   </dl>
                 </div>
               </div>
+            ) : null}
+            {isSuccess && !isDemoCheckout ? (
+              <p
+                className={
+                  purchaseRecordState.status === "error" ? "checkout-error" : "checkout-note"
+                }
+              >
+                {purchaseRecordState.message || "Confirming Stripe purchase record..."}
+              </p>
             ) : null}
             <div className="result-actions">
               <a className="outline-button result-link" href={isDemoCheckout ? `${appBase}?demo=1` : appBase}>
@@ -1089,7 +1155,9 @@ function appendStoredDemoOrder(order) {
 }
 
 function finalizeDemoCheckout() {
-  const orderId = new URLSearchParams(window.location.search).get("demo_order") || "";
+  const params = new URLSearchParams(window.location.search);
+  const orderId = params.get("demo_order") || "";
+  const stripeSessionId = params.get("session_id") || "";
   const pendingOrder = readPendingDemoOrder();
   const storedOrder = readStoredDemoOrder();
   const order =
@@ -1106,6 +1174,8 @@ function finalizeDemoCheckout() {
     ...order,
     status: "demo",
     stripeDemo: true,
+    stripeSessionId,
+    paymentStatus: stripeSessionId ? "paid" : "simulated",
     completedAt: new Date().toISOString()
   };
 

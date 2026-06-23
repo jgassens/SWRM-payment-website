@@ -181,6 +181,39 @@ app.post("/api/create-demo-checkout-session", async (req, res) => {
   }
 });
 
+app.post("/api/confirm-checkout-session", async (req, res) => {
+  try {
+    const sessionId = clean(req.body?.sessionId);
+
+    if (!sessionId || !sessionId.startsWith("cs_")) {
+      return res.status(400).json({ error: "A valid Stripe Checkout Session ID is required." });
+    }
+
+    if (!stripe) {
+      return res.status(503).json({ error: "Stripe checkout is not configured." });
+    }
+
+    const session = await stripe.checkout.sessions.retrieve(sessionId, {
+      expand: ["payment_intent", "customer", "invoice"]
+    });
+    const paid = session.payment_status === "paid" || session.payment_status === "no_payment_required";
+
+    return res.json({
+      recorded: false,
+      paid,
+      reservationId: session.metadata?.reservation_id || "",
+      sessionId: session.id,
+      status: session.status || "",
+      paymentStatus: session.payment_status || ""
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(502).json({
+      error: "Stripe could not confirm that Checkout Session."
+    });
+  }
+});
+
 if (isProduction) {
   app.use(express.static("dist"));
   app.use((req, res, next) => {
