@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { apiUrl, readJson } from "./api.js";
 import { categories, formatCurrency } from "./catalog.js";
 
@@ -18,6 +18,12 @@ export default function AdminApp({ appBase, Header }) {
     () => packages.filter((item) => category === "all" || item.category === category),
     [packages, category]
   );
+
+  useEffect(() => {
+    if (password) {
+      loadAdmin(password);
+    }
+  }, []);
 
   async function loadAdmin(nextPassword = password) {
     setLoading(true);
