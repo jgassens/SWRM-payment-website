@@ -35,12 +35,13 @@ const demoOrderStorageKey = "swrm-demo-last-order-v1";
 const pendingDemoOrderStorageKey = "swrm-demo-pending-order-v1";
 const demoOrdersStorageKey = "swrm-demo-orders-v1";
 const completedDemoOrderIdsStorageKey = "swrm-demo-completed-order-ids-v1";
+const forceDemoMode = true;
 
 export default function App() {
   const currentRoute = window.location.pathname;
   const params = new URLSearchParams(window.location.search);
   const checkoutResult = params.get("checkout");
-  const isDemoMode = params.get("demo") === "1";
+  const isDemoMode = forceDemoMode || params.get("demo") === "1";
 
   if (currentRoute.endsWith("/admin") || params.get("admin") === "1") {
     return <AdminApp appBase={appBase} Header={ConferenceHeader} />;
