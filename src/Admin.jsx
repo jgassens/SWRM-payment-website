@@ -209,9 +209,14 @@ export default function AdminApp({ appBase, Header }) {
               View storefront
             </a>
             {authed ? (
-              <button type="button" className="outline-button" onClick={logout}>
-                Sign out
-              </button>
+              <>
+                <a className="outline-button result-link" href="#vendor-order-book">
+                  Vendor order book
+                </a>
+                <button type="button" className="outline-button" onClick={logout}>
+                  Sign out
+                </button>
+              </>
             ) : null}
           </div>
         </section>
@@ -303,7 +308,7 @@ function OrderBook({ orders, allOrders, query, status, onQueryChange, onStatusCh
   const paidTotal = paidOrders.reduce((sum, order) => sum + Number(order.amountTotal || 0), 0);
 
   return (
-    <section className="admin-reservations" aria-label="Orders and sponsor follow-up">
+    <section id="vendor-order-book" className="admin-reservations" aria-label="Orders and sponsor follow-up">
       <div className="section-heading">
         <div>
           <p className="section-label">Orders & sponsor follow-up</p>
