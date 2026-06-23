@@ -99,8 +99,8 @@ async function createCheckoutSession(env, items, vendor) {
   form.set("mode", "payment");
   form.set("customer_email", vendor.email);
   form.set("client_reference_id", vendor.organization.slice(0, 200));
-  form.set("success_url", `${frontendUrl}/success?session_id={CHECKOUT_SESSION_ID}`);
-  form.set("cancel_url", `${frontendUrl}/cancel`);
+  form.set("success_url", `${frontendUrl}/?checkout=success&session_id={CHECKOUT_SESSION_ID}`);
+  form.set("cancel_url", `${frontendUrl}/?checkout=cancel`);
   form.set("metadata[organization]", vendor.organization);
   form.set("metadata[contact_name]", vendor.contactName);
   form.set("metadata[phone]", vendor.phone || "");

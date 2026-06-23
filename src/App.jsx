@@ -22,8 +22,13 @@ export default function App() {
   const [checkoutState, setCheckoutState] = useState({ status: "idle", message: "" });
 
   const currentRoute = window.location.pathname;
-  if (currentRoute.endsWith("/success")) return <CheckoutResult status="success" />;
-  if (currentRoute.endsWith("/cancel")) return <CheckoutResult status="cancel" />;
+  const checkoutResult = new URLSearchParams(window.location.search).get("checkout");
+  if (checkoutResult === "success" || currentRoute.endsWith("/success")) {
+    return <CheckoutResult status="success" />;
+  }
+  if (checkoutResult === "cancel" || currentRoute.endsWith("/cancel")) {
+    return <CheckoutResult status="cancel" />;
+  }
 
   const visiblePackages = useMemo(
     () => packages.filter((item) => item.category === activeCategory),

@@ -41,7 +41,7 @@ app.post("/api/create-checkout-session", async (req, res) => {
       const orderId = `mock_${Date.now().toString(36)}`;
       return res.json({
         mode: "mock",
-        url: `/success?mock=1&order=${encodeURIComponent(orderId)}`
+        url: `/?checkout=success&mock=1&order=${encodeURIComponent(orderId)}`
       });
     }
 
@@ -75,8 +75,8 @@ app.post("/api/create-checkout-session", async (req, res) => {
           .join("; ")
           .slice(0, 500)
       },
-      success_url: `${origin}/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${origin}/cancel`
+      success_url: `${origin}/?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${origin}/?checkout=cancel`
     });
 
     return res.json({ mode: "checkout", url: session.url });
