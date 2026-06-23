@@ -1048,7 +1048,7 @@ textarea:focus {
 
 .order-metrics {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
   margin-bottom: 18px;
 }
@@ -1132,6 +1132,12 @@ textarea:focus {
   border-color: rgba(157, 45, 33, 0.28);
   background: #f8eae8;
   color: #9d2d21;
+}
+
+.status-demo {
+  border-color: rgba(215, 180, 93, 0.6);
+  background: #f7f3e8;
+  color: #7a5c18;
 }
 
 .order-card h3 {

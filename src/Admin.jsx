@@ -3,6 +3,8 @@ import { apiUrl, readJson } from "./api.js";
 import { categories, formatCurrency } from "./catalog.js";
 
 const storedPasswordKey = "swrm-admin-password";
+const demoOrderStorageKey = "swrm-demo-last-order-v1";
+const demoOrdersStorageKey = "swrm-demo-orders-v1";
 
 export default function AdminApp({ appBase, Header }) {
   const [password, setPassword] = useState(() => sessionStorage.getItem(storedPasswordKey) || "");
@@ -34,21 +36,42 @@ export default function AdminApp({ appBase, Header }) {
   async function loadAdmin(nextPassword = password) {
     setLoading(true);
     setStatus({ type: "idle", message: "" });
-    try {
-      const [packageData, orderData] = await Promise.all([
-        adminFetch("/api/admin/packages", nextPassword),
-        adminFetch("/api/admin/orders", nextPassword)
-      ]);
+    const demoOrders = readStoredDemoOrders();
+
+    const [packageResult, orderResult] = await Promise.allSettled([
+      adminFetch("/api/admin/packages", nextPassword),
+      adminFetch("/api/admin/orders", nextPassword)
+    ]);
+
+    if (packageResult.status === "fulfilled") {
+      const packageData = packageResult.value;
       setPackages(packageData.packages.map(toDraftPackage));
-      setOrders(orderData.orders || []);
-      setStatus({ type: "success", message: "Admin catalog loaded." });
-    } catch (error) {
+    } else {
+      const error = packageResult.reason;
       setStatus({ type: "error", message: error.message || "Admin login failed." });
-      sessionStorage.removeItem(storedPasswordKey);
-      setPassword("");
-    } finally {
       setLoading(false);
+      if (error.status === 401 || error.status === 403) {
+        sessionStorage.removeItem(storedPasswordKey);
+        setPassword("");
+      }
+      return;
     }
+
+    if (orderResult.status === "fulfilled") {
+      setOrders([...demoOrders, ...(orderResult.value.orders || [])]);
+      setStatus({ type: "success", message: "Admin catalog loaded." });
+    } else {
+      setOrders(demoOrders);
+      setStatus({
+        type: demoOrders.length > 0 ? "success" : "error",
+        message:
+          demoOrders.length > 0
+            ? "Catalog loaded. Real orders could not be reached, but demo orders are available."
+            : orderResult.reason?.message || "Catalog loaded, but orders could not be reached."
+      });
+    }
+
+    setLoading(false);
   }
 
   async function login(event) {
@@ -276,6 +299,7 @@ export default function AdminApp({ appBase, Header }) {
 
 function OrderBook({ orders, allOrders, query, status, onQueryChange, onStatusChange }) {
   const paidOrders = allOrders.filter((order) => order.status === "paid");
+  const demoOrders = allOrders.filter((order) => order.status === "demo");
   const paidTotal = paidOrders.reduce((sum, order) => sum + Number(order.amountTotal || 0), 0);
 
   return (
@@ -293,6 +317,7 @@ function OrderBook({ orders, allOrders, query, status, onQueryChange, onStatusCh
       <div className="order-metrics">
         <Metric value={String(allOrders.length)} label="Total sessions" />
         <Metric value={String(paidOrders.length)} label="Paid orders" />
+        <Metric value={String(demoOrders.length)} label="Demo orders" />
         <Metric value={formatCents(paidTotal)} label="Paid total" />
       </div>
 
@@ -309,6 +334,7 @@ function OrderBook({ orders, allOrders, query, status, onQueryChange, onStatusCh
           Status
           <select value={status} onChange={(event) => onStatusChange(event.target.value)}>
             <option value="all">All statuses</option>
+            <option value="demo">Demo</option>
             <option value="paid">Paid</option>
             <option value="pending">Pending</option>
             <option value="expired">Expired</option>
@@ -391,6 +417,7 @@ function OrderCard({ order }) {
 
       <div className="order-meta">
         <span>Session {order.stripeSessionId || order.id}</span>
+        {order.isDemo ? <span>Demo sandbox order</span> : null}
         {order.paymentStatus ? <span>Payment {order.paymentStatus}</span> : null}
         {order.stripeInvoiceId ? <span>Invoice {order.stripeInvoiceId}</span> : null}
         {stripeLookup ? (
@@ -556,15 +583,94 @@ function StatusMessage({ status }) {
 }
 
 async function adminFetch(path, password, options = {}) {
-  const response = await fetch(apiUrl(path), {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${password}`,
-      ...(options.headers || {})
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), options.timeoutMs || 15000);
+
+  try {
+    const response = await fetch(apiUrl(path), {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${password}`,
+        ...(options.headers || {})
+      }
+    });
+    return await readAdminJson(response);
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error("Admin request timed out.");
     }
-  });
-  return readJson(response);
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+async function readAdminJson(response) {
+  try {
+    return await readJson(response);
+  } catch (error) {
+    error.status = response.status;
+    throw error;
+  }
+}
+
+function readStoredDemoOrders() {
+  try {
+    const rawListValue = window.localStorage.getItem(demoOrdersStorageKey);
+    const rawLastValue = window.sessionStorage.getItem(demoOrderStorageKey);
+    const parsedList = rawListValue ? JSON.parse(rawListValue) : [];
+    const parsedLast = rawLastValue ? JSON.parse(rawLastValue) : null;
+    const orders = [
+      parsedLast,
+      ...(Array.isArray(parsedList) ? parsedList : [])
+    ].filter(Boolean);
+    const uniqueOrders = new Map(orders.map((order) => [order.id, order]));
+    return Array.from(uniqueOrders.values()).map(toDemoOrder).filter(Boolean);
+  } catch (error) {
+    return [];
+  }
+}
+
+function toDemoOrder(order) {
+  if (!order?.id) return null;
+  const createdAt = Math.floor(Date.parse(order.createdAt || new Date().toISOString()) / 1000);
+  const items = Array.isArray(order.items) ? order.items : [];
+
+  return {
+    id: order.id,
+    stripeSessionId: "",
+    status: "demo",
+    paymentStatus: "simulated",
+    organization: order.vendor?.organization || "Demo organization",
+    contactName: order.vendor?.contactName || "",
+    email: order.vendor?.email || "",
+    phone: order.vendor?.phone || "",
+    website: order.vendor?.website || "",
+    notes: order.vendor?.notes || "",
+    packageSummary: items.map((item) => `${item.quantity}x ${item.name}`).join("; "),
+    amountTotal: dollarsToCents(order.total),
+    currency: "usd",
+    stripePaymentIntentId: "",
+    stripeCustomerId: "",
+    stripeInvoiceId: "",
+    stripeCustomerName: "",
+    stripeCustomerEmail: "",
+    stripeCustomerPhone: "",
+    billingAddress: {},
+    createdAt,
+    expiresAt: null,
+    updatedAt: createdAt,
+    isDemo: true,
+    items: items.map((item) => ({
+      packageId: item.id,
+      name: item.name,
+      category: "demo",
+      quantity: Number(item.quantity || 0),
+      unitAmount: dollarsToCents(item.price)
+    }))
+  };
 }
 
 function toDraftPackage(item) {

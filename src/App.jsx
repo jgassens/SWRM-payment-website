@@ -26,6 +26,7 @@ const initialVendor = {
 };
 const demoInventoryStorageKey = "swrm-demo-inventory-v1";
 const demoOrderStorageKey = "swrm-demo-last-order-v1";
+const demoOrdersStorageKey = "swrm-demo-orders-v1";
 
 export default function App() {
   const currentRoute = window.location.pathname;
@@ -994,6 +995,7 @@ function writeStoredDemoOrder(order) {
   } catch (error) {
     // Receipt details are nice-to-have; checkout state remains visible without them.
   }
+  appendStoredDemoOrder(order);
 }
 
 function readStoredDemoOrder() {
@@ -1010,6 +1012,23 @@ function clearStoredDemoOrder() {
     window.sessionStorage.removeItem(demoOrderStorageKey);
   } catch (error) {
     // Ignore storage failures during demo cleanup.
+  }
+  try {
+    window.localStorage.removeItem(demoOrdersStorageKey);
+  } catch (error) {
+    // Ignore storage failures during demo cleanup.
+  }
+}
+
+function appendStoredDemoOrder(order) {
+  try {
+    const rawValue = window.localStorage.getItem(demoOrdersStorageKey);
+    const current = rawValue ? JSON.parse(rawValue) : [];
+    const orders = Array.isArray(current) ? current : [];
+    const nextOrders = [order, ...orders.filter((item) => item?.id !== order.id)].slice(0, 50);
+    window.localStorage.setItem(demoOrdersStorageKey, JSON.stringify(nextOrders));
+  } catch (error) {
+    // Demo order history is only for local verification.
   }
 }
 
