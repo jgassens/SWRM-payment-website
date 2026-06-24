@@ -15,6 +15,11 @@ const appBase = import.meta.env.BASE_URL || "/";
 const logoUrl = `${appBase}assets/swrm-logo.webp`;
 const noBoothChoiceId = "no-booth";
 const boothAddonIds = new Set(["booth-premium-corner"]);
+const commercialBoothChoiceId = "booth-commercial";
+const commercialBoothEarlyId = "booth-standard-early";
+const commercialBoothRegularId = "booth-standard";
+const commercialBoothIds = new Set([commercialBoothEarlyId, commercialBoothRegularId]);
+const commercialEarlyBirdEndsAt = new Date(2026, 7, 2).getTime();
 const menuCategoryIds = ["tiers", "programming", "digital", "meals", "branded", "student"];
 const recommendedPackageIds = [
   "meals-coffee-break",
@@ -644,7 +649,9 @@ function BoothPathStep({
       "Opens the same add-on sponsorship menu"
     ]
   };
-  const choices = [...boothPackages, noBoothChoice];
+  const commercialBoothChoice = createCommercialBoothChoice(boothPackages);
+  const nonCommercialBooths = boothPackages.filter((item) => !isCommercialBooth(item));
+  const choices = [commercialBoothChoice, ...nonCommercialBooths, noBoothChoice].filter(Boolean);
 
   return (
     <section className="booth-step" aria-label="Choose a booth path">
@@ -660,16 +667,23 @@ function BoothPathStep({
 
       <div className="booth-options-grid">
         {choices.map((item) => {
-          const selected = selectedBoothPath === item.id;
+          const selectionId = item.selectionId || item.id;
+          const selected = item.packageIds
+            ? item.packageIds.includes(selectedBoothPath)
+            : selectedBoothPath === item.id;
           const soldOut = item.id !== noBoothChoiceId && isSoldOut(item);
 
           return (
             <button
               key={item.id}
               type="button"
-              className={selected ? "booth-card selected" : "booth-card"}
+              className={[
+                "booth-card",
+                item.isCommercialCombined ? "commercial-booth-card" : "",
+                selected ? "selected" : ""
+              ].filter(Boolean).join(" ")}
               data-testid={`booth-${item.id}`}
-              onClick={() => onChoose(item.id)}
+              onClick={() => onChoose(selectionId)}
               disabled={soldOut}
               aria-pressed={selected}
             >
@@ -680,11 +694,29 @@ function BoothPathStep({
               <span className="booth-card-title">{item.name}</span>
               {item.label ? <span className="item-label">{item.label}</span> : null}
               <span className="summary">{item.summary}</span>
-              <span className="booth-benefits">
-                {item.included.slice(0, 2).map((benefit) => (
-                  <span key={benefit}>{benefit}</span>
-                ))}
-              </span>
+              {item.isCommercialCombined ? (
+                <span className="commercial-booth-details">
+                  <span className="booth-benefits">
+                    {item.included.slice(0, 2).map((benefit) => (
+                      <span key={benefit}>{benefit}</span>
+                    ))}
+                  </span>
+                  <span className="commercial-footprint">
+                    <span className="commercial-footprint-label">4 x 4 footprint</span>
+                    <span className="commercial-footprint-grid" aria-hidden="true">
+                      {Array.from({ length: 16 }, (_, index) => (
+                        <span key={index} />
+                      ))}
+                    </span>
+                  </span>
+                </span>
+              ) : (
+                <span className="booth-benefits">
+                  {item.included.slice(0, 2).map((benefit) => (
+                    <span key={benefit}>{benefit}</span>
+                  ))}
+                </span>
+              )}
             </button>
           );
         })}
@@ -1605,6 +1637,10 @@ function packageId(itemOrId) {
   return typeof itemOrId === "string" ? itemOrId : itemOrId?.id || "";
 }
 
+function isCommercialBooth(itemOrId) {
+  return commercialBoothIds.has(packageId(itemOrId));
+}
+
 function isBoothAddon(itemOrId) {
   return boothAddonIds.has(packageId(itemOrId));
 }
@@ -1616,6 +1652,42 @@ function isPhysicalBooth(itemOrId) {
 
 function isSoldOut(item) {
   return item.active === false || item.stockRemaining === 0;
+}
+
+function createCommercialBoothChoice(boothPackages) {
+  const early = boothPackages.find((item) => item.id === commercialBoothEarlyId);
+  const regular = boothPackages.find((item) => item.id === commercialBoothRegularId);
+  if (!early && !regular) return null;
+
+  const earlyIsCurrent = Boolean(early && !isSoldOut(early) && Date.now() < commercialEarlyBirdEndsAt);
+  const regularIsAvailable = Boolean(regular && !isSoldOut(regular));
+  const selection = earlyIsCurrent ? early : regularIsAvailable ? regular : early || regular;
+  const fallback = early || regular;
+  const earlyPrice = early ? formatCurrency(early.price) : null;
+  const regularPrice = regular ? formatCurrency(regular.price) : null;
+  const priceNote =
+    earlyPrice && regularPrice
+      ? `Early bird ${earlyPrice} through Aug 1; ${regularPrice} after Aug 1`
+      : fallback.label;
+
+  return {
+    ...fallback,
+    id: commercialBoothChoiceId,
+    packageIds: [commercialBoothEarlyId, commercialBoothRegularId],
+    selectionId: selection.id,
+    price: selection.price,
+    priceCents: selection.priceCents,
+    stockRemaining: selection.stockRemaining,
+    active: selection.active,
+    availability: selection.availability,
+    label: priceNote,
+    summary: "Commercial exhibit booth with table, chairs, power, badges, and standard exhibit support.",
+    included: [
+      "Carpeted 8' x 10' booth with pipe-and-drape",
+      "6' skirted table, two chairs, identification sign, and exhibitor registrations"
+    ],
+    isCommercialCombined: true
+  };
 }
 
 function inventoryLabel(item) {

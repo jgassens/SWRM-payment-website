@@ -390,6 +390,14 @@ h3 {
   line-height: 1.42;
 }
 
+.commercial-booth-card {
+  min-height: 286px;
+}
+
+.commercial-booth-card .summary {
+  margin-bottom: 14px;
+}
+
 .booth-benefits {
   display: grid;
   gap: 7px;
@@ -416,6 +424,62 @@ h3 {
   height: 5px;
   border-radius: 50%;
   background: var(--teal-bright);
+}
+
+.commercial-booth-details {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: end;
+  margin-top: auto;
+  padding-top: 14px;
+  border-top: 1px solid #dfe7e7;
+}
+
+.commercial-booth-details .booth-benefits {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.commercial-footprint {
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+  padding: 10px;
+  border: 1px solid rgba(17, 141, 150, 0.24);
+  border-radius: 4px;
+  background: #ffffff;
+}
+
+.commercial-footprint-label {
+  color: var(--teal-dark);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.commercial-footprint-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 13px);
+  grid-template-rows: repeat(4, 13px);
+  gap: 4px;
+}
+
+.commercial-footprint-grid span {
+  display: block;
+  width: 13px;
+  height: 13px;
+  border: 1px solid rgba(11, 91, 97, 0.42);
+  border-radius: 2px;
+  background: rgba(17, 141, 150, 0.12);
+}
+
+.booth-card.selected .commercial-footprint-grid span {
+  border-color: rgba(11, 91, 97, 0.72);
+  background: rgba(17, 141, 150, 0.22);
 }
 
 .booth-addon-panel {
@@ -1479,6 +1543,14 @@ textarea:focus {
   .addon-menu,
   .demo-panel {
     padding: 22px;
+  }
+
+  .commercial-booth-details {
+    grid-template-columns: 1fr;
+  }
+
+  .commercial-footprint {
+    justify-items: start;
   }
 
   .addon-pitch {
