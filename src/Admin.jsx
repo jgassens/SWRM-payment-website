@@ -61,7 +61,7 @@ export default function AdminApp({ appBase, Header }) {
     }
 
     if (orderResult.status === "fulfilled") {
-      setOrders([...demoOrders, ...(orderResult.value.orders || [])]);
+      setOrders(mergeOrderRecords(demoOrders, orderResult.value.orders || []));
       setStatus({ type: "success", message: "Admin catalog loaded." });
     } else {
       setOrders(demoOrders);
@@ -802,6 +802,16 @@ function filterOrders(orders, query, status) {
 
 function isDemoOrder(order) {
   return Boolean(order?.isDemo || order?.checkoutMode === "demo" || order?.status === "demo");
+}
+
+// The Worker (D1) is the system of record. Demo checkouts are also cached in this browser's
+// storage, so the same order id can arrive from both sources; keep the server copy so the
+// order book never shows or counts a single checkout twice. Live orders only ever come from
+// the server, so they are unaffected.
+function mergeOrderRecords(localOrders, serverOrders) {
+  const serverIds = new Set(serverOrders.map((order) => order.id));
+  const localOnly = localOrders.filter((order) => !serverIds.has(order.id));
+  return [...localOnly, ...serverOrders];
 }
 
 // Vendor-supplied website values are rendered as clickable links in the admin

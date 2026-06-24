@@ -167,6 +167,24 @@ export default {
         { status, origin: resolveAllowedOrigin(request.headers.get("Origin") || "", env) }
       );
     }
+  },
+
+  // Safety net so reserved inventory can never get stuck behind an abandoned checkout:
+  // every run releases live holds whose Stripe session has passed its expires_at. This
+  // backs up the Stripe `checkout.session.expired` webhook and the admin "Release expired
+  // holds" button rather than depending on either one being triggered.
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(
+      releaseExpiredReservations(env).catch((error) => {
+        console.error(
+          JSON.stringify({
+            level: "error",
+            message: "scheduled_release_failed",
+            error: error instanceof Error ? error.message : "Unknown error"
+          })
+        );
+      })
+    );
   }
 };
 
@@ -1176,6 +1194,20 @@ async function deletePackage(env, id) {
 
   const current = await getPackageById(env.DB, id);
   if (!current) throw new HttpError("Package not found.", 404);
+
+  // Never delete a package that already appears on a recorded order: it would orphan
+  // (or, with FK enforcement, fail to delete) the order line items and corrupt the
+  // permanent record. Hiding via the Live toggle is the correct way to retire it.
+  const referenced = await env.DB
+    .prepare("SELECT COUNT(*) AS count FROM checkout_items WHERE package_id = ?")
+    .bind(id)
+    .first();
+  if (Number(referenced?.count || 0) > 0) {
+    throw new HttpError(
+      "This package appears on recorded orders. Uncheck Live to hide it instead of deleting, so the order history stays intact.",
+      409
+    );
+  }
 
   await env.DB.prepare("DELETE FROM packages WHERE id = ?").bind(id).run();
   return current;
