@@ -8,7 +8,20 @@ const defaultAllowedOrigins = [
 ];
 const validCategoryIds = new Set(categories.map((category) => category.id));
 const requiredVendorMessage = "Organization, contact name, email, phone, and website are required before checkout.";
+const emailVerificationRequiredMessage = "Verify the vendor email address before checkout.";
+const defaultEmailFrom = "noreplySWRM2026@jeremiahsrandom.website";
+const emailVerificationCodeExpirySeconds = 15 * 60;
+const emailVerificationTokenExpirySeconds = 2 * 60 * 60;
+const maxEmailVerificationAttempts = 5;
 const liveCheckoutExpirySeconds = 31 * 60;
+const boothAddonIds = new Set(["booth-premium-corner"]);
+const physicalBoothIds = new Set([
+  "booth-standard-early",
+  "booth-standard",
+  "booth-academic-grad",
+  "booth-nonprofit"
+]);
+const boothUpgradeRequiresBoothMessage = "Premium / corner upgrade requires a booth selection.";
 const rateLimitPolicies = {
   checkout: {
     limit: 8,
@@ -19,6 +32,16 @@ const rateLimitPolicies = {
     limit: 20,
     windowSeconds: 10 * 60,
     message: "Too many demo checkout attempts. Please wait a few minutes and try again."
+  },
+  emailVerification: {
+    limit: 6,
+    windowSeconds: 10 * 60,
+    message: "Too many verification emails requested. Please wait a few minutes and try again."
+  },
+  emailConfirmation: {
+    limit: 15,
+    windowSeconds: 10 * 60,
+    message: "Too many verification attempts. Please wait a few minutes and try again."
   },
   admin: {
     limit: 8,
@@ -82,6 +105,14 @@ export default {
         return jsonResponse({ packages }, { origin: allowedOrigin });
       }
 
+      if (url.pathname === "/api/email-verifications" && request.method === "POST") {
+        return await handleCreateEmailVerification(request, env, allowedOrigin);
+      }
+
+      if (url.pathname === "/api/email-verifications/confirm" && request.method === "POST") {
+        return await handleConfirmEmailVerification(request, env, allowedOrigin);
+      }
+
       if (url.pathname === "/api/create-checkout-session" && request.method === "POST") {
         return await handleCheckout(request, env, allowedOrigin);
       }
@@ -139,6 +170,67 @@ export default {
   }
 };
 
+async function handleCreateEmailVerification(request, env, origin) {
+  const rateLimit = await consumeRateLimit(
+    env,
+    request,
+    "emailVerification",
+    rateLimitPolicies.emailVerification
+  );
+  if (!rateLimit.allowed) {
+    return rateLimitResponse(rateLimit, origin);
+  }
+
+  const body = await request.json().catch(() => null);
+  const email = normalizeEmail(body?.email);
+
+  if (!isValidEmail(email)) {
+    return jsonResponse(
+      { error: "Enter a valid vendor email address." },
+      { status: 400, origin }
+    );
+  }
+
+  const verification = await createEmailVerification(env, email, body?.checkoutMode);
+
+  return jsonResponse(
+    {
+      ok: true,
+      email,
+      verificationId: verification.id,
+      expiresAt: verification.expiresAt,
+      sent: true
+    },
+    { origin }
+  );
+}
+
+async function handleConfirmEmailVerification(request, env, origin) {
+  const rateLimit = await consumeRateLimit(
+    env,
+    request,
+    "emailConfirmation",
+    rateLimitPolicies.emailConfirmation
+  );
+  if (!rateLimit.allowed) {
+    return rateLimitResponse(rateLimit, origin);
+  }
+
+  const body = await request.json().catch(() => null);
+  const result = await confirmEmailVerification(env, body || {});
+
+  return jsonResponse(
+    {
+      verified: true,
+      email: result.email,
+      verificationId: result.id,
+      token: result.token,
+      expiresAt: result.expiresAt
+    },
+    { origin }
+  );
+}
+
 async function handleCheckout(request, env, origin) {
   if (!env.STRIPE_SECRET_KEY) {
     return jsonResponse(
@@ -163,6 +255,11 @@ async function handleCheckout(request, env, origin) {
     );
   }
 
+  const cartDependencyError = validateCartDependencies(items);
+  if (cartDependencyError) {
+    return jsonResponse({ error: cartDependencyError }, { status: 400, origin });
+  }
+
   if (!hasRequiredVendorFields(vendor)) {
     return jsonResponse(
       { error: requiredVendorMessage },
@@ -170,6 +267,7 @@ async function handleCheckout(request, env, origin) {
     );
   }
 
+  const emailVerification = await requireVerifiedEmail(env, vendor, body?.emailVerification);
   const reservationId = crypto.randomUUID();
   let inventoryReserved = false;
 
@@ -182,7 +280,9 @@ async function handleCheckout(request, env, origin) {
       throw new Error("Stripe did not return a Checkout URL.");
     }
 
-    await recordReservation(env, reservationId, session, items, vendor);
+    await recordReservation(env, reservationId, session, items, vendor, {
+      emailVerification
+    });
 
     return jsonResponse(
       { mode: "checkout", url: session.url },
@@ -221,6 +321,11 @@ async function handleDemoCheckout(request, env, origin) {
     );
   }
 
+  const cartDependencyError = validateCartDependencies(items);
+  if (cartDependencyError) {
+    return jsonResponse({ error: cartDependencyError }, { status: 400, origin });
+  }
+
   if (!hasRequiredVendorFields(vendor)) {
     return jsonResponse(
       { error: requiredVendorMessage },
@@ -228,6 +333,7 @@ async function handleDemoCheckout(request, env, origin) {
     );
   }
 
+  const emailVerification = await requireVerifiedEmail(env, vendor, body?.emailVerification);
   const demoOrderId = clean(body?.demoOrderId, 120) || `demo_${crypto.randomUUID()}`;
   const session = await createCheckoutSession(env, items, vendor, demoOrderId, {
     mode: "demo",
@@ -239,7 +345,8 @@ async function handleDemoCheckout(request, env, origin) {
   }
 
   await recordReservation(env, demoOrderId, session, items, vendor, {
-    checkoutMode: "demo"
+    checkoutMode: "demo",
+    emailVerification
   });
 
   return jsonResponse(
@@ -518,6 +625,202 @@ async function normalizeCart(cart, env) {
   return Array.from(merged.values());
 }
 
+function validateCartDependencies(items) {
+  const itemIds = new Set(items.map(({ item }) => item.id));
+  const hasBoothUpgrade = Array.from(boothAddonIds).some((id) => itemIds.has(id));
+  const hasPhysicalBooth = Array.from(physicalBoothIds).some((id) => itemIds.has(id));
+  return hasBoothUpgrade && !hasPhysicalBooth ? boothUpgradeRequiresBoothMessage : "";
+}
+
+async function createEmailVerification(env, rawEmail, rawCheckoutMode) {
+  if (!env.DB) {
+    throw new HttpError("Email verification storage is not configured.", 503);
+  }
+
+  if (!env.EMAIL?.send) {
+    throw new HttpError("Email sending is not configured on this Worker.", 503);
+  }
+
+  await ensureSchema(env.DB);
+
+  const email = normalizeEmail(rawEmail);
+  const checkoutMode = normalizeCheckoutMode(rawCheckoutMode);
+  const now = Math.floor(Date.now() / 1000);
+  const expiresAt = now + emailVerificationCodeExpirySeconds;
+  const id = crypto.randomUUID();
+  const code = generateVerificationCode();
+  const codeSalt = randomHex(16);
+  const codeHash = await sha256Hex(`${codeSalt}:${code}`);
+
+  await env.DB.prepare(`
+    INSERT INTO email_verifications (
+      id, normalized_email, checkout_mode, code_hash, code_salt, expires_at,
+      attempts, created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
+  `).bind(
+    id,
+    email,
+    checkoutMode,
+    codeHash,
+    codeSalt,
+    expiresAt,
+    now,
+    now
+  ).run();
+
+  try {
+    const sendResult = await sendVerificationEmail(env, email, code);
+    await env.DB.prepare(`
+      UPDATE email_verifications
+      SET sent_at = ?, provider_message_id = ?, updated_at = ?
+      WHERE id = ?
+    `).bind(
+      now,
+      clean(sendResult?.messageId, 500),
+      now,
+      id
+    ).run();
+  } catch (error) {
+    await env.DB.prepare(`
+      UPDATE email_verifications
+      SET last_error = ?, updated_at = ?
+      WHERE id = ?
+    `).bind(
+      clean(error instanceof Error ? error.message : "Email send failed.", 1000),
+      now,
+      id
+    ).run();
+    throw new HttpError("Verification email could not be sent. Please try again.", 502);
+  }
+
+  return { id, email, expiresAt };
+}
+
+async function confirmEmailVerification(env, payload) {
+  if (!env.DB) {
+    throw new HttpError("Email verification storage is not configured.", 503);
+  }
+
+  const id = clean(payload?.verificationId, 120);
+  const email = normalizeEmail(payload?.email);
+  const code = String(payload?.code || "").replace(/\D/g, "").slice(0, 6);
+
+  if (!id || !isValidEmail(email) || code.length !== 6) {
+    throw new HttpError("Enter the six-digit verification code sent to the vendor email.", 400);
+  }
+
+  await ensureSchema(env.DB);
+
+  const row = await env.DB.prepare(`
+    SELECT id, normalized_email, code_hash, code_salt, expires_at, attempts
+    FROM email_verifications
+    WHERE id = ? AND normalized_email = ?
+  `).bind(id, email).first();
+
+  if (!row) {
+    throw new HttpError("Verification code was not found. Send a new code.", 400);
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  if (Number(row.expires_at || 0) < now) {
+    throw new HttpError("Verification code expired. Send a new code.", 400);
+  }
+
+  const attempts = Number(row.attempts || 0);
+  if (attempts >= maxEmailVerificationAttempts) {
+    throw new HttpError("Too many incorrect codes. Send a new verification code.", 429);
+  }
+
+  const codeHash = await sha256Hex(`${row.code_salt}:${code}`);
+  if (!constantTimeEqualHex(codeHash, row.code_hash || "")) {
+    await env.DB.prepare(`
+      UPDATE email_verifications
+      SET attempts = attempts + 1, updated_at = ?
+      WHERE id = ?
+    `).bind(now, id).run();
+    throw new HttpError("Verification code did not match.", 400);
+  }
+
+  const token = randomHex(32);
+  const tokenHash = await sha256Hex(token);
+  const tokenExpiresAt = now + emailVerificationTokenExpirySeconds;
+
+  await env.DB.prepare(`
+    UPDATE email_verifications
+    SET verified_at = ?, checkout_token_hash = ?, token_expires_at = ?, updated_at = ?
+    WHERE id = ?
+  `).bind(now, tokenHash, tokenExpiresAt, now, id).run();
+
+  return { id, email, token, expiresAt: tokenExpiresAt, verifiedAt: now };
+}
+
+async function requireVerifiedEmail(env, vendor, payload) {
+  if (String(env.EMAIL_VERIFICATION_REQUIRED || "true").toLowerCase() === "false") {
+    return { id: "", verifiedAt: null };
+  }
+
+  if (!env.DB) {
+    throw new HttpError("Email verification is required but storage is not configured.", 503);
+  }
+
+  const email = normalizeEmail(vendor.email);
+  const id = clean(payload?.verificationId, 120);
+  const token = clean(payload?.token, 500);
+
+  if (!id || !token || !isValidEmail(email)) {
+    throw new HttpError(emailVerificationRequiredMessage, 400);
+  }
+
+  await ensureSchema(env.DB);
+
+  const row = await env.DB.prepare(`
+    SELECT id, normalized_email, verified_at, checkout_token_hash, token_expires_at
+    FROM email_verifications
+    WHERE id = ? AND normalized_email = ?
+  `).bind(id, email).first();
+
+  const now = Math.floor(Date.now() / 1000);
+  if (!row || !row.verified_at || Number(row.token_expires_at || 0) < now) {
+    throw new HttpError(emailVerificationRequiredMessage, 400);
+  }
+
+  const tokenHash = await sha256Hex(token);
+  if (!constantTimeEqualHex(tokenHash, row.checkout_token_hash || "")) {
+    throw new HttpError(emailVerificationRequiredMessage, 400);
+  }
+
+  return { id: row.id, verifiedAt: Number(row.verified_at || now) };
+}
+
+async function sendVerificationEmail(env, email, code) {
+  const from = clean(env.EMAIL_FROM, 320) || defaultEmailFrom;
+  const subject = "SWRM 2026 sponsorship email verification code";
+  const text = [
+    `Your SWRM 2026 sponsorship checkout verification code is ${code}.`,
+    "",
+    "Enter this code on the sponsorship checkout page to continue to Stripe.",
+    "The code expires in 15 minutes.",
+    "",
+    "If you did not request this code, you can ignore this email."
+  ].join("\n");
+  const html = `
+    <p>Your SWRM 2026 sponsorship checkout verification code is:</p>
+    <p style="font-size: 24px; font-weight: 700; letter-spacing: 0.14em;">${escapeHtml(code)}</p>
+    <p>Enter this code on the sponsorship checkout page to continue to Stripe.</p>
+    <p>The code expires in 15 minutes.</p>
+    <p>If you did not request this code, you can ignore this email.</p>
+  `;
+
+  return await env.EMAIL.send({
+    to: email,
+    from,
+    subject,
+    text,
+    html
+  });
+}
+
 async function reserveInventory(env, items) {
   if (!env.DB) return;
 
@@ -569,12 +872,14 @@ async function recordReservation(env, reservationId, session, items, vendor, opt
   const now = Math.floor(Date.now() / 1000);
   const amountTotal = sumItems(items);
   const checkoutMode = normalizeCheckoutMode(options.checkoutMode || session?.metadata?.checkout_mode);
+  const emailVerification = options.emailVerification || {};
   await env.DB.prepare(`
     INSERT INTO checkout_sessions (
       id, stripe_session_id, checkout_mode, status, organization, contact_name, email, phone, website,
-      notes, package_summary, amount_total, currency, payment_status, created_at, expires_at, updated_at
+      notes, package_summary, amount_total, currency, payment_status,
+      email_verification_id, email_verified_at, created_at, expires_at, updated_at
     )
-    VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, 'usd', ?, ?, ?, ?)
+    VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, 'usd', ?, ?, ?, ?, ?, ?)
   `).bind(
     reservationId,
     session.id || "",
@@ -588,6 +893,8 @@ async function recordReservation(env, reservationId, session, items, vendor, opt
     summarizeItems(items),
     amountTotal,
     session.payment_status || "unpaid",
+    clean(emailVerification.id, 120),
+    emailVerification.verifiedAt || null,
     now,
     session.expires_at || null,
     now
@@ -640,7 +947,8 @@ async function listOrders(env) {
            phone, website, notes, package_summary, amount_total, currency,
            stripe_payment_intent_id, stripe_customer_id, stripe_invoice_id,
            stripe_customer_name, stripe_customer_email, stripe_customer_phone,
-           billing_address_json, created_at, expires_at, updated_at
+           billing_address_json, email_verification_id, email_verified_at,
+           created_at, expires_at, updated_at
     FROM checkout_sessions
     ORDER BY created_at DESC
     LIMIT 200
@@ -700,6 +1008,9 @@ async function listOrders(env) {
       stripeCustomerEmail: row.stripe_customer_email || "",
       stripeCustomerPhone: row.stripe_customer_phone || "",
       billingAddress: parseObject(row.billing_address_json),
+      emailVerificationId: row.email_verification_id || "",
+      emailVerifiedAt: row.email_verified_at ? Number(row.email_verified_at) : null,
+      emailVerificationStatus: row.email_verified_at ? "verified" : "unverified",
       createdAt: row.created_at,
       expiresAt: row.expires_at,
       updatedAt: row.updated_at,
@@ -1011,6 +1322,8 @@ async function ensureSchema(db) {
       stripe_customer_email TEXT NOT NULL DEFAULT '',
       stripe_customer_phone TEXT NOT NULL DEFAULT '',
       billing_address_json TEXT NOT NULL DEFAULT '{}',
+      email_verification_id TEXT NOT NULL DEFAULT '',
+      email_verified_at INTEGER,
       created_at INTEGER NOT NULL,
       expires_at INTEGER,
       updated_at INTEGER NOT NULL
@@ -1031,11 +1344,30 @@ async function ensureSchema(db) {
       reset_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     )`,
+    `CREATE TABLE IF NOT EXISTS email_verifications (
+      id TEXT PRIMARY KEY,
+      normalized_email TEXT NOT NULL,
+      checkout_mode TEXT NOT NULL DEFAULT 'live',
+      code_hash TEXT NOT NULL,
+      code_salt TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      verified_at INTEGER,
+      checkout_token_hash TEXT NOT NULL DEFAULT '',
+      token_expires_at INTEGER,
+      sent_at INTEGER,
+      provider_message_id TEXT NOT NULL DEFAULT '',
+      last_error TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`,
     "CREATE INDEX IF NOT EXISTS idx_packages_active_sort ON packages(active, sort_order)",
     "CREATE INDEX IF NOT EXISTS idx_checkout_sessions_status_expires ON checkout_sessions(status, expires_at)",
     "CREATE INDEX IF NOT EXISTS idx_checkout_sessions_mode ON checkout_sessions(checkout_mode)",
     "CREATE INDEX IF NOT EXISTS idx_checkout_sessions_stripe ON checkout_sessions(stripe_session_id)",
-    "CREATE INDEX IF NOT EXISTS idx_rate_limits_reset ON rate_limits(reset_at)"
+    "CREATE INDEX IF NOT EXISTS idx_rate_limits_reset ON rate_limits(reset_at)",
+    "CREATE INDEX IF NOT EXISTS idx_email_verifications_email ON email_verifications(normalized_email, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_email_verifications_token ON email_verifications(normalized_email, token_expires_at)"
   ];
 
   for (const statement of statements) {
@@ -1212,6 +1544,45 @@ function checkoutModeFromStripeSession(session) {
 
 function clean(value, max = 500) {
   return String(value || "").trim().slice(0, max);
+}
+
+function normalizeEmail(value) {
+  return clean(value, 320).toLowerCase();
+}
+
+function isValidEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || ""));
+}
+
+function generateVerificationCode() {
+  const values = new Uint32Array(1);
+  let value = 0;
+  do {
+    crypto.getRandomValues(values);
+    value = values[0];
+  } while (value >= 4294000000);
+  return String(value % 1000000).padStart(6, "0");
+}
+
+function randomHex(byteLength) {
+  const bytes = new Uint8Array(byteLength);
+  crypto.getRandomValues(bytes);
+  return bufferToHex(bytes);
+}
+
+async function sha256Hex(value) {
+  const encoder = new TextEncoder();
+  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(String(value || "")));
+  return bufferToHex(digest);
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function isStripeTestSecret(value) {

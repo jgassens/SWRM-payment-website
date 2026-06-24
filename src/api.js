@@ -15,6 +15,10 @@ export const demoCheckoutEndpoint =
 
 export const confirmCheckoutEndpoint = apiUrl("/api/confirm-checkout-session");
 
+export const emailVerificationEndpoint = apiUrl("/api/email-verifications");
+
+export const emailVerificationConfirmEndpoint = apiUrl("/api/email-verifications/confirm");
+
 export async function readJson(response) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {

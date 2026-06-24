@@ -3,8 +3,11 @@ import { apiUrl, readJson } from "./api.js";
 import { categories, formatCurrency } from "./catalog.js";
 
 const storedPasswordKey = "swrm-admin-password";
+const demoInventoryStorageKey = "swrm-demo-inventory-v1";
 const demoOrderStorageKey = "swrm-demo-last-order-v1";
+const pendingDemoOrderStorageKey = "swrm-demo-pending-order-v1";
 const demoOrdersStorageKey = "swrm-demo-orders-v1";
+const completedDemoOrderIdsStorageKey = "swrm-demo-completed-order-ids-v1";
 
 export default function AdminApp({ appBase, Header }) {
   const [password, setPassword] = useState(() => sessionStorage.getItem(storedPasswordKey) || "");
@@ -191,6 +194,20 @@ export default function AdminApp({ appBase, Header }) {
     }
   }
 
+  function resetDemoSandbox() {
+    try {
+      window.localStorage.removeItem(demoInventoryStorageKey);
+      window.localStorage.removeItem(demoOrdersStorageKey);
+      window.localStorage.removeItem(completedDemoOrderIdsStorageKey);
+      window.sessionStorage.removeItem(demoOrderStorageKey);
+      window.sessionStorage.removeItem(pendingDemoOrderStorageKey);
+      setOrders((current) => current.filter((order) => !order.localDemo));
+      setStatus({ type: "success", message: "Demo sandbox reset for this browser." });
+    } catch (error) {
+      setStatus({ type: "error", message: "Demo sandbox could not be reset in this browser." });
+    }
+  }
+
   return (
     <div className="app-shell admin-app">
       <Header cartCount={0} admin />
@@ -268,6 +285,9 @@ export default function AdminApp({ appBase, Header }) {
                 </button>
                 <button type="button" className="outline-button compact-button" onClick={releaseExpired}>
                   Release expired holds
+                </button>
+                <button type="button" className="outline-button compact-button" onClick={resetDemoSandbox}>
+                  Reset demo
                 </button>
               </div>
             </div>
@@ -380,6 +400,7 @@ function OrderCard({ order }) {
     "SWRM 2026 sponsorship logo and materials"
   )}`;
   const websiteHref = safeExternalUrl(order.website);
+  const emailVerified = Boolean(order.emailVerifiedAt || order.emailVerificationStatus === "verified");
 
   return (
     <article className="order-card">
@@ -433,6 +454,7 @@ function OrderCard({ order }) {
       <div className="order-meta">
         <span>Session {order.stripeSessionId || order.id}</span>
         {demoOrder ? <span>Demo sandbox order</span> : null}
+        <span>{emailVerified ? "Email verified" : "Email not verified"}</span>
         {order.paymentStatus ? <span>Payment {order.paymentStatus}</span> : null}
         {order.stripeInvoiceId ? <span>Invoice {order.stripeInvoiceId}</span> : null}
         {stripeLookup ? (
@@ -675,10 +697,17 @@ function toDemoOrder(order) {
     stripeCustomerEmail: "",
     stripeCustomerPhone: "",
     billingAddress: {},
+    emailVerificationId: order.emailVerification?.verificationId || "",
+    emailVerifiedAt:
+      order.emailVerification?.status === "verified" && order.emailVerification?.verifiedAt
+        ? Math.floor(Date.parse(order.emailVerification.verifiedAt) / 1000)
+        : null,
+    emailVerificationStatus: order.emailVerification?.status || "unverified",
     createdAt,
     expiresAt: null,
     updatedAt: createdAt,
     isDemo: true,
+    localDemo: true,
     items: items.map((item) => ({
       packageId: item.id,
       name: item.name,
@@ -759,6 +788,7 @@ function filterOrders(orders, query, status) {
       order.stripeSessionId,
       order.stripePaymentIntentId,
       order.stripeInvoiceId,
+      order.emailVerificationStatus,
       order.notes,
       ...(order.items || []).flatMap((item) => [item.name, item.packageId, item.category])
     ]

@@ -5,6 +5,8 @@ import {
   checkoutEndpoint,
   confirmCheckoutEndpoint,
   demoCheckoutEndpoint,
+  emailVerificationConfirmEndpoint,
+  emailVerificationEndpoint,
   readJson
 } from "./api.js";
 import { categories, formatCurrency, packages as fallbackPackages, withInventoryDefaults } from "./catalog.js";
@@ -12,6 +14,7 @@ import { categories, formatCurrency, packages as fallbackPackages, withInventory
 const appBase = import.meta.env.BASE_URL || "/";
 const logoUrl = `${appBase}assets/swrm-logo.webp`;
 const noBoothChoiceId = "no-booth";
+const boothAddonIds = new Set(["booth-premium-corner"]);
 const menuCategoryIds = ["tiers", "programming", "digital", "meals", "branded", "student"];
 const recommendedPackageIds = [
   "meals-coffee-break",
@@ -37,6 +40,14 @@ const demoOrdersStorageKey = "swrm-demo-orders-v1";
 const completedDemoOrderIdsStorageKey = "swrm-demo-completed-order-ids-v1";
 const forceDemoMode = true;
 const requiredVendorFields = ["organization", "contactName", "email", "phone", "website"];
+const initialEmailVerification = {
+  status: "idle",
+  email: "",
+  verificationId: "",
+  code: "",
+  token: "",
+  message: ""
+};
 
 export default function App() {
   const currentRoute = window.location.pathname;
@@ -69,6 +80,7 @@ function Storefront({ isDemoMode }) {
   const [catalogState, setCatalogState] = useState({ status: "loading", message: "" });
   const [cart, setCart] = useState([]);
   const [vendor, setVendor] = useState(initialVendor);
+  const [emailVerification, setEmailVerification] = useState(initialEmailVerification);
   const [checkoutState, setCheckoutState] = useState({ status: "idle", message: "" });
   const catalog = useMemo(
     () => (isDemoMode ? applyDemoInventory(baseCatalog, demoInventory) : baseCatalog),
@@ -115,7 +127,11 @@ function Storefront({ isDemoMode }) {
 
   const catalogById = useMemo(() => new Map(catalog.map((item) => [item.id, item])), [catalog]);
   const boothPackages = useMemo(
-    () => catalog.filter((item) => item.category === "booths" && item.active !== false),
+    () => catalog.filter((item) => isPhysicalBooth(item) && item.active !== false),
+    [catalog]
+  );
+  const boothAddonPackages = useMemo(
+    () => catalog.filter((item) => isBoothAddon(item) && item.active !== false),
     [catalog]
   );
   const menuCategories = useMemo(
@@ -154,7 +170,13 @@ function Storefront({ isDemoMode }) {
     selectedBoothPath && selectedBoothPath !== noBoothChoiceId
       ? catalogById.get(selectedBoothPath)
       : null;
+  const selectedBoothQuantity =
+    selectedBoothPath && selectedBoothPath !== noBoothChoiceId
+      ? cartLines.find((line) => line.id === selectedBoothPath)?.quantity || 0
+      : 0;
+  const canAddBoothAddOns = Boolean(selectedBoothItem && selectedBoothQuantity > 0);
   const hasBoothPath = Boolean(selectedBoothPath);
+  const emailVerified = isEmailVerifiedForVendor(vendor.email, emailVerification);
   const total = cartLines.reduce((sum, line) => sum + line.item.price * line.quantity, 0);
   const cartCount = cartLines.reduce((sum, line) => sum + line.quantity, 0);
 
@@ -163,19 +185,25 @@ function Storefront({ isDemoMode }) {
     if (!item || isSoldOut(item)) return;
 
     setCart((lines) => {
+      const nextBoothPath = options.nextBoothPath || selectedBoothPath;
       const scopedLines = options.replaceBooth
-        ? lines.filter((line) => catalogById.get(line.id)?.category !== "booths")
+        ? lines.filter((line) => !isPhysicalBooth(catalogById.get(line.id) || line.id))
         : lines;
+      if (isBoothAddon(item) && physicalBoothQuantity(scopedLines, nextBoothPath) < 1) {
+        return scopedLines;
+      }
       const existing = scopedLines.find((line) => line.id === itemId);
-      const maxQuantity = maxQuantityFor(item);
+      const maxQuantity = maxQuantityForCartItem(item, scopedLines, nextBoothPath);
+      if (maxQuantity < 1) return scopedLines;
       if (existing) {
-        return scopedLines.map((line) =>
+        const nextLines = scopedLines.map((line) =>
           line.id === itemId
             ? { ...line, quantity: Math.min(maxQuantity, line.quantity + 1) }
             : line
         );
+        return clampBoothAddOns(nextLines, catalogById, nextBoothPath);
       }
-      return [...scopedLines, { id: itemId, quantity: 1 }];
+      return clampBoothAddOns([...scopedLines, { id: itemId, quantity: 1 }], catalogById, nextBoothPath);
     });
   }
 
@@ -186,7 +214,7 @@ function Storefront({ isDemoMode }) {
       scrollToSponsorMenu();
       return;
     }
-    addToCart(choiceId, { replaceBooth: true });
+    addToCart(choiceId, { replaceBooth: true, nextBoothPath: choiceId });
     scrollToSponsorMenu();
   }
 
@@ -209,8 +237,12 @@ function Storefront({ isDemoMode }) {
           : line
       )
       .filter((line) => line.quantity > 0);
+    const nextBoothPath =
+      selectedBoothPath === itemId && !nextLines.some((line) => line.id === itemId)
+        ? noBoothChoiceId
+        : selectedBoothPath;
 
-    setCart(nextLines);
+    setCart(clampBoothAddOns(nextLines, catalogById, nextBoothPath));
     if (selectedBoothPath === itemId && !nextLines.some((line) => line.id === itemId)) {
       setSelectedBoothPath(noBoothChoiceId);
     }
@@ -218,22 +250,125 @@ function Storefront({ isDemoMode }) {
 
   function updateVendor(field, value) {
     setVendor((current) => ({ ...current, [field]: value }));
+    if (field === "email") {
+      setEmailVerification((current) => {
+        if (!current.email && !current.token && !current.verificationId) return current;
+        if (normalizeEmailValue(value) === current.email) return current;
+        return {
+          ...initialEmailVerification,
+          message: value.trim() ? "Email changed. Send a new verification code." : ""
+        };
+      });
+    }
   }
 
-  function resetDemoInventory() {
-    const nextInventory = createDemoInventory(baseCatalog);
-    writeStoredDemoInventory(nextInventory);
-    clearStoredDemoOrder();
-    setDemoInventory(nextInventory);
-    setCart([]);
-    setSelectedBoothPath(null);
-    setCheckoutState({
-      status: "idle",
-      message: "Demo inventory reset from the current live catalog."
-    });
+  function updateEmailVerificationCode(value) {
+    const code = value.replace(/\D/g, "").slice(0, 6);
+    setEmailVerification((current) => ({ ...current, code }));
+  }
+
+  async function requestEmailVerification() {
+    const email = vendor.email.trim();
+    if (!email) {
+      setEmailVerification({
+        ...initialEmailVerification,
+        status: "error",
+        message: "Enter the vendor email address first."
+      });
+      return;
+    }
+
+    setEmailVerification((current) => ({
+      ...current,
+      status: "sending",
+      email: normalizeEmailValue(email),
+      verificationId: "",
+      token: "",
+      message: "Sending verification code..."
+    }));
+
+    try {
+      const response = await fetch(emailVerificationEndpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, checkoutMode: isDemoMode ? "demo" : "live" })
+      });
+      const data = await readJson(response);
+      setEmailVerification({
+        status: "sent",
+        email: normalizeEmailValue(data.email || email),
+        verificationId: data.verificationId || "",
+        code: data.debugCode || "",
+        token: "",
+        message: data.debugCode
+          ? `Local test code: ${data.debugCode}`
+          : `Verification code sent to ${data.email || email}.`
+      });
+    } catch (error) {
+      setEmailVerification({
+        ...initialEmailVerification,
+        status: "error",
+        email: normalizeEmailValue(email),
+        message: error.message || "Verification email could not be sent."
+      });
+    }
+  }
+
+  async function confirmEmailVerification() {
+    const code = emailVerification.code.trim();
+    if (!emailVerification.verificationId || code.length !== 6) {
+      setEmailVerification((current) => ({
+        ...current,
+        status: "error",
+        message: "Enter the six-digit verification code."
+      }));
+      return;
+    }
+
+    setEmailVerification((current) => ({
+      ...current,
+      status: "checking",
+      message: "Checking verification code..."
+    }));
+
+    try {
+      const response = await fetch(emailVerificationConfirmEndpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: vendor.email,
+          verificationId: emailVerification.verificationId,
+          code
+        })
+      });
+      const data = await readJson(response);
+      setEmailVerification({
+        status: "verified",
+        email: normalizeEmailValue(data.email || vendor.email),
+        verificationId: data.verificationId || emailVerification.verificationId,
+        code: "",
+        token: data.token || "",
+        message: "Email verified for checkout."
+      });
+    } catch (error) {
+      setEmailVerification((current) => ({
+        ...current,
+        status: "error",
+        token: "",
+        message: error.message || "Verification code did not work."
+      }));
+    }
   }
 
   async function startCheckout() {
+    if (!emailVerified) {
+      setCheckoutState({
+        status: "error",
+        message: "Verify the vendor email address before checkout."
+      });
+      return;
+    }
+
     if (isDemoMode) {
       setCheckoutState({ status: "loading", message: "Opening Stripe test Checkout..." });
 
@@ -243,13 +378,18 @@ function Storefront({ isDemoMode }) {
           demoInventory || readStoredDemoInventory()
         );
         reserveDemoInventory(currentInventory, cartLines);
-        const demoOrder = createDemoOrder({ cartLines, total, vendor });
+        const demoOrder = createDemoOrder({ cartLines, total, vendor, emailVerification });
         writePendingDemoOrder(demoOrder);
 
         const response = await fetch(demoCheckoutEndpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ cart, vendor, demoOrderId: demoOrder.id })
+          body: JSON.stringify({
+            cart,
+            vendor,
+            demoOrderId: demoOrder.id,
+            emailVerification: checkoutEmailVerificationPayload(emailVerification)
+          })
         });
         const data = await readJson(response);
 
@@ -274,7 +414,11 @@ function Storefront({ isDemoMode }) {
       const response = await fetch(checkoutEndpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cart, vendor })
+        body: JSON.stringify({
+          cart,
+          vendor,
+          emailVerification: checkoutEmailVerificationPayload(emailVerification)
+        })
       });
       const data = await readJson(response);
       window.location.href = data.url;
@@ -291,17 +435,19 @@ function Storefront({ isDemoMode }) {
       <ConferenceHeader cartCount={cartCount} isDemoMode={isDemoMode} />
       <main className="page">
         <IntroBlock />
-        <DemoModePanel
-          isDemoMode={isDemoMode}
-          onReset={resetDemoInventory}
-        />
+        <DemoModePanel isDemoMode={isDemoMode} />
 
         <section className="commerce-grid" aria-label="SWRM sponsorship checkout">
           <div className="catalog-column">
             <BoothPathStep
               boothPackages={boothPackages}
+              boothAddonPackages={boothAddonPackages}
               selectedBoothPath={selectedBoothPath}
+              selectedBoothQuantity={selectedBoothQuantity}
+              canAddBoothAddOns={canAddBoothAddOns}
+              cartLines={cartLines}
               onChoose={chooseBoothPath}
+              onAddBoothAddon={addToCart}
             />
 
             <section
@@ -365,6 +511,11 @@ function Storefront({ isDemoMode }) {
             onQuantityChange={updateQuantity}
             onCheckout={startCheckout}
             checkoutState={checkoutState}
+            emailVerification={emailVerification}
+            emailVerified={emailVerified}
+            onEmailVerificationCodeChange={updateEmailVerificationCode}
+            onEmailVerificationConfirm={confirmEmailVerification}
+            onEmailVerificationRequest={requestEmailVerification}
             hasBoothPath={hasBoothPath}
             selectedBoothPath={selectedBoothPath}
             selectedBoothItem={selectedBoothItem}
@@ -406,7 +557,7 @@ function ConferenceHeader({ cartCount, admin = false, isDemoMode = false }) {
   );
 }
 
-function DemoModePanel({ isDemoMode, onReset }) {
+function DemoModePanel({ isDemoMode }) {
   if (!isDemoMode) {
     return (
       <section className="demo-panel" aria-label="Demo checkout mode">
@@ -435,11 +586,6 @@ function DemoModePanel({ isDemoMode, onReset }) {
           browser after test checkout succeeds, so you can confirm the buying flow behaves like
           the real one.
         </span>
-      </div>
-      <div className="demo-actions">
-        <button type="button" className="outline-button demo-action" onClick={onReset}>
-          Reset demo
-        </button>
       </div>
     </section>
   );
@@ -476,7 +622,16 @@ function Fact({ value, label }) {
   );
 }
 
-function BoothPathStep({ boothPackages, selectedBoothPath, onChoose }) {
+function BoothPathStep({
+  boothPackages,
+  boothAddonPackages,
+  selectedBoothPath,
+  selectedBoothQuantity,
+  canAddBoothAddOns,
+  cartLines,
+  onChoose,
+  onAddBoothAddon
+}) {
   const noBoothChoice = {
     id: noBoothChoiceId,
     name: "No booth, just logo visibility and sponsorship add-ons",
@@ -513,6 +668,7 @@ function BoothPathStep({ boothPackages, selectedBoothPath, onChoose }) {
               key={item.id}
               type="button"
               className={selected ? "booth-card selected" : "booth-card"}
+              data-testid={`booth-${item.id}`}
               onClick={() => onChoose(item.id)}
               disabled={soldOut}
               aria-pressed={selected}
@@ -533,6 +689,65 @@ function BoothPathStep({ boothPackages, selectedBoothPath, onChoose }) {
           );
         })}
       </div>
+
+      {boothAddonPackages.length > 0 ? (
+        <div className="booth-addon-panel" aria-label="Optional booth add-ons">
+          <div>
+            <p className="section-label">Optional booth upgrade</p>
+            <h3>Improve your booth placement</h3>
+            <span>
+              Add premium or corner placement after choosing a booth. Upgrade quantity cannot
+              exceed your booth quantity.
+            </span>
+          </div>
+          <div className="booth-addon-list">
+            {boothAddonPackages.map((item) => {
+              const soldOut = isSoldOut(item);
+              const currentQuantity = cartLines.find((line) => line.id === item.id)?.quantity || 0;
+              const maxQuantity = Math.min(maxQuantityFor(item), selectedBoothQuantity);
+              const cannotAdd =
+                !canAddBoothAddOns || soldOut || currentQuantity >= maxQuantity || maxQuantity < 1;
+
+              return (
+                <article
+                  key={item.id}
+                  className={cannotAdd ? "booth-addon-card disabled" : "booth-addon-card"}
+                  data-testid={`booth-addon-${item.id}`}
+                >
+                  <div>
+                    <span className="card-topline">
+                      <span>{inventoryLabel(item)}</span>
+                      <span>{formatCurrency(item.price)}</span>
+                    </span>
+                    <h4>{item.name}</h4>
+                    <p>{item.summary}</p>
+                    {currentQuantity > 0 ? (
+                      <span className="booth-addon-status">
+                        {currentQuantity} of {maxQuantity} selected
+                      </span>
+                    ) : null}
+                  </div>
+                  <button
+                    type="button"
+                    className="outline-button"
+                    data-testid={`add-${item.id}`}
+                    onClick={() => onAddBoothAddon(item.id)}
+                    disabled={cannotAdd}
+                  >
+                    {soldOut
+                      ? "Sold out"
+                      : !canAddBoothAddOns
+                        ? "Pick booth first"
+                        : currentQuantity >= maxQuantity
+                          ? "Max added"
+                          : "Add upgrade"}
+                  </button>
+                </article>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -599,6 +814,11 @@ function CartPanel({
   onQuantityChange,
   onCheckout,
   checkoutState,
+  emailVerification,
+  emailVerified,
+  onEmailVerificationCodeChange,
+  onEmailVerificationConfirm,
+  onEmailVerificationRequest,
   hasBoothPath,
   selectedBoothPath,
   selectedBoothItem,
@@ -608,7 +828,8 @@ function CartPanel({
   const canCheckout =
     hasBoothPath &&
     cartLines.length > 0 &&
-    requiredVendorFields.every((field) => vendor[field].trim());
+    requiredVendorFields.every((field) => vendor[field].trim()) &&
+    emailVerified;
 
   return (
     <aside id="checkout" className="cart-panel" aria-label="Vendor registration and cart">
@@ -646,6 +867,14 @@ function CartPanel({
             required
           />
         </label>
+        <EmailVerificationPanel
+          email={vendor.email}
+          emailVerification={emailVerification}
+          emailVerified={emailVerified}
+          onCodeChange={onEmailVerificationCodeChange}
+          onConfirm={onEmailVerificationConfirm}
+          onRequest={onEmailVerificationRequest}
+        />
         <label>
           Phone <span className="required-marker" aria-hidden="true">*</span>
           <input
@@ -699,17 +928,25 @@ function CartPanel({
         ) : (
           <div className="cart-lines">
             {cartLines.map((line) => (
-              <div className="cart-line" key={line.id}>
+              <div className="cart-line" key={line.id} data-testid={`cart-line-${line.id}`}>
                 <div>
                   <strong>{line.item.name}</strong>
                   <span>{formatCurrency(line.item.price)} each</span>
                 </div>
                 <div className="quantity-control" aria-label={`${line.item.name} quantity`}>
-                  <button type="button" onClick={() => onQuantityChange(line.id, -1)}>
+                  <button
+                    type="button"
+                    data-testid={`decrease-${line.id}`}
+                    onClick={() => onQuantityChange(line.id, -1)}
+                  >
                     -
                   </button>
                   <span>{line.quantity}</span>
-                  <button type="button" onClick={() => onQuantityChange(line.id, 1)}>
+                  <button
+                    type="button"
+                    data-testid={`increase-${line.id}`}
+                    onClick={() => onQuantityChange(line.id, 1)}
+                  >
                     +
                   </button>
                 </div>
@@ -745,6 +982,8 @@ function CartPanel({
         </p>
       ) : !hasBoothPath ? (
         <p className="checkout-note">Choose a booth path before checkout opens.</p>
+      ) : !emailVerified ? (
+        <p className="checkout-note">Verify the vendor email address before checkout opens.</p>
       ) : isDemoMode ? (
         <p className="checkout-note">
           Demo checkout opens Stripe test mode, captures vendor registration, and adjusts only
@@ -752,6 +991,69 @@ function CartPanel({
         </p>
       ) : null}
     </aside>
+  );
+}
+
+function EmailVerificationPanel({
+  email,
+  emailVerification,
+  emailVerified,
+  onCodeChange,
+  onConfirm,
+  onRequest
+}) {
+  const normalizedEmail = normalizeEmailValue(email);
+  const codeSentForThisEmail =
+    Boolean(emailVerification.verificationId) && emailVerification.email === normalizedEmail;
+  const busy = emailVerification.status === "sending" || emailVerification.status === "checking";
+  const canSend = Boolean(normalizedEmail) && !busy;
+  const canConfirm = codeSentForThisEmail && emailVerification.code.length === 6 && !busy;
+
+  return (
+    <div className={`email-verification span-all ${emailVerified ? "verified" : ""}`}>
+      <div className="email-verification-header">
+        <span>Email verification</span>
+        {emailVerified ? <strong>Verified</strong> : <strong>Required</strong>}
+      </div>
+      <div className="email-verification-actions">
+        <button
+          type="button"
+          className="outline-button compact-button"
+          onClick={onRequest}
+          disabled={!canSend}
+        >
+          {emailVerification.status === "sending"
+            ? "Sending..."
+            : codeSentForThisEmail
+              ? "Send new code"
+              : "Send code"}
+        </button>
+        <label>
+          Code
+          <input
+            value={emailVerification.code}
+            onChange={(event) => onCodeChange(event.target.value)}
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            placeholder="000000"
+            disabled={!codeSentForThisEmail || emailVerified}
+          />
+        </label>
+        <button
+          type="button"
+          className="outline-button compact-button"
+          onClick={onConfirm}
+          disabled={!canConfirm || emailVerified}
+        >
+          {emailVerification.status === "checking" ? "Checking..." : "Verify"}
+        </button>
+      </div>
+      {emailVerification.message ? (
+        <p className={emailVerification.status === "error" ? "checkout-error" : "checkout-note"}>
+          {emailVerification.message}
+        </p>
+      ) : null}
+    </div>
   );
 }
 
@@ -854,11 +1156,6 @@ function CheckoutResult({ status, isDemoMode = false }) {
     };
   }, [isSuccess, isDemoCheckout, stripeSessionId]);
 
-  function resetDemoAndReturn() {
-    clearDemoSandbox();
-    window.location.href = `${appBase}?demo=1`;
-  }
-
   return (
     <div className="app-shell result-shell">
       <ConferenceHeader cartCount={0} isDemoMode={isDemoCheckout} />
@@ -910,6 +1207,14 @@ function CheckoutResult({ status, isDemoMode = false }) {
                       <dd>{demoOrder.vendor.email}</dd>
                     </div>
                     <div>
+                      <dt>Email status</dt>
+                      <dd>
+                        {demoOrder.emailVerification?.status === "verified"
+                          ? "Verified"
+                          : "Not verified"}
+                      </dd>
+                    </div>
+                    <div>
                       <dt>Phone</dt>
                       <dd>{demoOrder.vendor.phone || "Not provided"}</dd>
                     </div>
@@ -934,11 +1239,6 @@ function CheckoutResult({ status, isDemoMode = false }) {
               <a className="outline-button result-link" href={isDemoCheckout ? `${appBase}?demo=1` : appBase}>
                 {isDemoCheckout ? "Back to demo portal" : "Back to portal"}
               </a>
-              {isDemoCheckout ? (
-                <button type="button" className="outline-button result-link" onClick={resetDemoAndReturn}>
-                  Reset demo
-                </button>
-              ) : null}
             </div>
           </div>
         </section>
@@ -1043,7 +1343,7 @@ function reserveDemoInventory(inventory, cartLines) {
   };
 }
 
-function createDemoOrder({ cartLines, total, vendor }) {
+function createDemoOrder({ cartLines, total, vendor, emailVerification }) {
   return {
     id: `demo_${Date.now().toString(36)}`,
     createdAt: new Date().toISOString(),
@@ -1055,6 +1355,14 @@ function createDemoOrder({ cartLines, total, vendor }) {
       website: cleanDemoValue(vendor.website),
       notes: cleanDemoValue(vendor.notes)
     },
+    emailVerification: emailVerification?.token
+      ? {
+          status: "verified",
+          email: emailVerification.email,
+          verificationId: emailVerification.verificationId,
+          verifiedAt: new Date().toISOString()
+        }
+      : { status: "unverified" },
     itemCount: cartLines.reduce((sum, line) => sum + line.quantity, 0),
     total,
     items: cartLines.map((line) => ({
@@ -1068,6 +1376,25 @@ function createDemoOrder({ cartLines, total, vendor }) {
 
 function cleanDemoValue(value) {
   return String(value || "").trim();
+}
+
+function normalizeEmailValue(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function isEmailVerifiedForVendor(email, emailVerification) {
+  return Boolean(
+    emailVerification?.token &&
+      emailVerification.status === "verified" &&
+      emailVerification.email === normalizeEmailValue(email)
+  );
+}
+
+function checkoutEmailVerificationPayload(emailVerification) {
+  return {
+    verificationId: emailVerification.verificationId,
+    token: emailVerification.token
+  };
 }
 
 function readStoredDemoInventory() {
@@ -1248,6 +1575,43 @@ function clearDemoSandbox() {
 
 function maxQuantityFor(item) {
   return Number.isInteger(item.stockRemaining) ? Math.max(0, item.stockRemaining) : 99;
+}
+
+function maxQuantityForCartItem(item, lines, boothPath) {
+  const inventoryMax = maxQuantityFor(item);
+  if (!isBoothAddon(item)) return inventoryMax;
+  return Math.min(inventoryMax, physicalBoothQuantity(lines, boothPath));
+}
+
+function clampBoothAddOns(lines, catalogById, boothPath) {
+  return lines
+    .map((line) => {
+      const item = catalogById.get(line.id);
+      if (!item || !isBoothAddon(item)) return line;
+      const maxQuantity = maxQuantityForCartItem(item, lines, boothPath);
+      if (maxQuantity < 1) return null;
+      return { ...line, quantity: Math.min(line.quantity, maxQuantity) };
+    })
+    .filter(Boolean);
+}
+
+function physicalBoothQuantity(lines, boothPath) {
+  if (!boothPath || boothPath === noBoothChoiceId) return 0;
+  const line = lines.find((item) => item.id === boothPath);
+  return Math.max(0, Number(line?.quantity) || 0);
+}
+
+function packageId(itemOrId) {
+  return typeof itemOrId === "string" ? itemOrId : itemOrId?.id || "";
+}
+
+function isBoothAddon(itemOrId) {
+  return boothAddonIds.has(packageId(itemOrId));
+}
+
+function isPhysicalBooth(itemOrId) {
+  const item = typeof itemOrId === "string" ? null : itemOrId;
+  return (item?.category === "booths" || packageId(itemOrId).startsWith("booth-")) && !isBoothAddon(itemOrId);
 }
 
 function isSoldOut(item) {
