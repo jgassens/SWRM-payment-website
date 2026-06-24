@@ -867,14 +867,6 @@ function CartPanel({
             required
           />
         </label>
-        <EmailVerificationPanel
-          email={vendor.email}
-          emailVerification={emailVerification}
-          emailVerified={emailVerified}
-          onCodeChange={onEmailVerificationCodeChange}
-          onConfirm={onEmailVerificationConfirm}
-          onRequest={onEmailVerificationRequest}
-        />
         <label>
           Phone <span className="required-marker" aria-hidden="true">*</span>
           <input
@@ -885,6 +877,14 @@ function CartPanel({
             required
           />
         </label>
+        <EmailVerificationPanel
+          email={vendor.email}
+          emailVerification={emailVerification}
+          emailVerified={emailVerified}
+          onCodeChange={onEmailVerificationCodeChange}
+          onConfirm={onEmailVerificationConfirm}
+          onRequest={onEmailVerificationRequest}
+        />
         <label className="span-all">
           Website <span className="required-marker" aria-hidden="true">*</span>
           <input

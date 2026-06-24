@@ -682,16 +682,26 @@ async function createEmailVerification(env, rawEmail, rawCheckoutMode) {
       id
     ).run();
   } catch (error) {
+    const emailError = describeEmailSendError(error);
+    console.error(
+      JSON.stringify({
+        level: "error",
+        message: "email_verification_send_failed",
+        email,
+        errorCode: emailError.code,
+        errorMessage: emailError.message
+      })
+    );
     await env.DB.prepare(`
       UPDATE email_verifications
       SET last_error = ?, updated_at = ?
       WHERE id = ?
     `).bind(
-      clean(error instanceof Error ? error.message : "Email send failed.", 1000),
+      clean(`${emailError.code}: ${emailError.message}`, 1000),
       now,
       id
     ).run();
-    throw new HttpError("Verification email could not be sent. Please try again.", 502);
+    throw new HttpError(publicEmailSendMessage(emailError), 502);
   }
 
   return { id, email, expiresAt };
@@ -804,21 +814,36 @@ async function sendVerificationEmail(env, email, code) {
     "",
     "If you did not request this code, you can ignore this email."
   ].join("\n");
-  const html = `
-    <p>Your SWRM 2026 sponsorship checkout verification code is:</p>
-    <p style="font-size: 24px; font-weight: 700; letter-spacing: 0.14em;">${escapeHtml(code)}</p>
-    <p>Enter this code on the sponsorship checkout page to continue to Stripe.</p>
-    <p>The code expires in 15 minutes.</p>
-    <p>If you did not request this code, you can ignore this email.</p>
-  `;
 
   return await env.EMAIL.send({
     to: email,
     from,
     subject,
-    text,
-    html
+    text
   });
+}
+
+function describeEmailSendError(error) {
+  const candidate = error && typeof error === "object" ? error : {};
+  return {
+    code: clean(candidate.code || candidate.name || "EMAIL_SEND_FAILED", 120),
+    message: clean(candidate.message || String(error || "Email send failed."), 1000)
+  };
+}
+
+function publicEmailSendMessage(error) {
+  if (
+    error.code === "E_SENDER_NOT_VERIFIED" ||
+    error.code === "E_SENDER_DOMAIN_NOT_AVAILABLE"
+  ) {
+    return "Verification email is not fully configured for this sender domain yet.";
+  }
+
+  if (error.code === "E_RATE_LIMIT_EXCEEDED" || error.code === "E_DAILY_LIMIT_EXCEEDED") {
+    return "Verification email sending is temporarily rate limited. Please try again later.";
+  }
+
+  return "Verification email could not be sent. Please try again.";
 }
 
 async function reserveInventory(env, items) {
@@ -1574,15 +1599,6 @@ async function sha256Hex(value) {
   const encoder = new TextEncoder();
   const digest = await crypto.subtle.digest("SHA-256", encoder.encode(String(value || "")));
   return bufferToHex(digest);
-}
-
-function escapeHtml(value) {
-  return String(value || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
 }
 
 function isStripeTestSecret(value) {
