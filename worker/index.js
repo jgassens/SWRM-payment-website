@@ -8,6 +8,26 @@ const defaultAllowedOrigins = [
 ];
 const validCategoryIds = new Set(categories.map((category) => category.id));
 const requiredVendorMessage = "Organization, contact name, email, phone, and website are required before checkout.";
+const liveCheckoutExpirySeconds = 31 * 60;
+const rateLimitPolicies = {
+  checkout: {
+    limit: 8,
+    windowSeconds: 10 * 60,
+    message: "Too many checkout attempts. Please wait a few minutes and try again."
+  },
+  demoCheckout: {
+    limit: 20,
+    windowSeconds: 10 * 60,
+    message: "Too many demo checkout attempts. Please wait a few minutes and try again."
+  },
+  admin: {
+    limit: 8,
+    windowSeconds: 15 * 60,
+    message: "Too many admin login attempts. Please wait and try again."
+  }
+};
+let schemaReady = false;
+let seedReady = false;
 
 class InventoryError extends Error {
   constructor(message) {
@@ -81,7 +101,14 @@ export default {
       if (url.pathname.startsWith("/api/admin/")) {
         const authed = await verifyAdminRequest(request, env);
         if (!authed.ok) {
-          return jsonResponse({ error: authed.error }, { status: authed.status, origin: allowedOrigin });
+          return jsonResponse(
+            { error: authed.error },
+            {
+              status: authed.status,
+              origin: allowedOrigin,
+              headers: authed.retryAfter ? { "Retry-After": String(authed.retryAfter) } : {}
+            }
+          );
         }
         return await handleAdmin(request, env, allowedOrigin, url);
       }
@@ -118,6 +145,11 @@ async function handleCheckout(request, env, origin) {
       { error: "Stripe checkout is not configured." },
       { status: 500, origin }
     );
+  }
+
+  const rateLimit = await consumeRateLimit(env, request, "checkout", rateLimitPolicies.checkout);
+  if (!rateLimit.allowed) {
+    return rateLimitResponse(rateLimit, origin);
   }
 
   const body = await request.json().catch(() => null);
@@ -171,6 +203,11 @@ async function handleDemoCheckout(request, env, origin) {
       { error: "Stripe demo checkout needs a test-mode Stripe secret key." },
       { status: 503, origin }
     );
+  }
+
+  const rateLimit = await consumeRateLimit(env, request, "demoCheckout", rateLimitPolicies.demoCheckout);
+  if (!rateLimit.allowed) {
+    return rateLimitResponse(rateLimit, origin);
   }
 
   const body = await request.json().catch(() => null);
@@ -306,6 +343,9 @@ async function createCheckoutSession(env, items, vendor, reservationId, options 
   form.set("payment_intent_data[receipt_email]", vendor.email);
   form.set("invoice_creation[enabled]", "true");
   form.set("client_reference_id", reservationId);
+  if (!isDemoCheckout) {
+    form.set("expires_at", String(Math.floor(Date.now() / 1000) + liveCheckoutExpirySeconds));
+  }
   form.set(
     "success_url",
     isDemoCheckout
@@ -459,13 +499,23 @@ async function normalizeCart(cart, env) {
   if (!Array.isArray(cart)) return [];
   const packageMap = new Map((await listPackages(env, { activeOnly: true })).map((item) => [item.id, item]));
 
-  return cart
-    .map((entry) => {
-      const item = packageMap.get(String(entry?.id || ""));
-      const quantity = Math.max(1, Math.min(Number(entry?.quantity) || 1, 99));
-      return item ? { item, quantity } : null;
-    })
-    .filter(Boolean);
+  // Merge duplicate ids so each package becomes a single line item. checkout_items
+  // is keyed by (session_id, package_id), so un-merged duplicates would create a
+  // valid Stripe session and then fail the DB insert, leaving an orphaned session.
+  const merged = new Map();
+  for (const entry of cart) {
+    const item = packageMap.get(String(entry?.id || ""));
+    if (!item) continue;
+    const quantity = Math.max(1, Math.min(Number(entry?.quantity) || 1, 99));
+    const existing = merged.get(item.id);
+    if (existing) {
+      existing.quantity = Math.min(99, existing.quantity + quantity);
+    } else {
+      merged.set(item.id, { item, quantity });
+    }
+  }
+
+  return Array.from(merged.values());
 }
 
 async function reserveInventory(env, items) {
@@ -882,8 +932,13 @@ async function findReservationId(env, stripeSessionId) {
 
 async function ensureSeeded(db) {
   await ensureSchema(db);
+  if (seedReady) return;
+
   const countRow = await db.prepare("SELECT COUNT(*) AS count FROM packages").first();
-  if (Number(countRow?.count || 0) > 0) return;
+  if (Number(countRow?.count || 0) > 0) {
+    seedReady = true;
+    return;
+  }
 
   const statements = seedPackages.map((item, index) => {
     const seed = withInventoryDefaults(item, index);
@@ -912,9 +967,12 @@ async function ensureSeeded(db) {
   if (statements.length > 0) {
     await db.batch(statements);
   }
+  seedReady = true;
 }
 
 async function ensureSchema(db) {
+  if (schemaReady) return;
+
   const statements = [
     `CREATE TABLE IF NOT EXISTS packages (
       id TEXT PRIMARY KEY,
@@ -966,15 +1024,24 @@ async function ensureSchema(db) {
       unit_amount INTEGER NOT NULL CHECK (unit_amount >= 0),
       PRIMARY KEY (session_id, package_id)
     )`,
+    `CREATE TABLE IF NOT EXISTS rate_limits (
+      rate_key TEXT PRIMARY KEY,
+      scope TEXT NOT NULL,
+      count INTEGER NOT NULL DEFAULT 0,
+      reset_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`,
     "CREATE INDEX IF NOT EXISTS idx_packages_active_sort ON packages(active, sort_order)",
     "CREATE INDEX IF NOT EXISTS idx_checkout_sessions_status_expires ON checkout_sessions(status, expires_at)",
     "CREATE INDEX IF NOT EXISTS idx_checkout_sessions_mode ON checkout_sessions(checkout_mode)",
-    "CREATE INDEX IF NOT EXISTS idx_checkout_sessions_stripe ON checkout_sessions(stripe_session_id)"
+    "CREATE INDEX IF NOT EXISTS idx_checkout_sessions_stripe ON checkout_sessions(stripe_session_id)",
+    "CREATE INDEX IF NOT EXISTS idx_rate_limits_reset ON rate_limits(reset_at)"
   ];
 
   for (const statement of statements) {
     await db.prepare(statement).run();
   }
+  schemaReady = true;
 }
 
 function mapPackageRow(row) {
@@ -1188,18 +1255,128 @@ function trimTrailingSlash(value) {
   return String(value || "https://jgassens.github.io/SWRM-payment-website").replace(/\/+$/, "");
 }
 
+async function consumeRateLimit(env, request, scope, policy) {
+  if (!env.DB) return { allowed: true, retryAfter: 0 };
+  await ensureSchema(env.DB);
+
+  const now = Math.floor(Date.now() / 1000);
+  const resetAt = now + policy.windowSeconds;
+  const rateKey = await rateLimitKey(env, request, scope);
+  const current = await env.DB.prepare(`
+    SELECT count, reset_at
+    FROM rate_limits
+    WHERE rate_key = ?
+  `).bind(rateKey).first();
+
+  if (!current || Number(current.reset_at || 0) <= now) {
+    await env.DB.prepare(`
+      INSERT OR REPLACE INTO rate_limits (rate_key, scope, count, reset_at, updated_at)
+      VALUES (?, ?, 1, ?, ?)
+    `).bind(rateKey, scope, resetAt, now).run();
+    return { allowed: true, retryAfter: 0 };
+  }
+
+  const nextCount = Number(current.count || 0) + 1;
+  await env.DB.prepare(`
+    UPDATE rate_limits
+    SET count = ?, updated_at = ?
+    WHERE rate_key = ?
+  `).bind(nextCount, now, rateKey).run();
+
+  const retryAfter = Math.max(1, Number(current.reset_at || now) - now);
+  return {
+    allowed: nextCount <= policy.limit,
+    retryAfter,
+    message: policy.message
+  };
+}
+
+async function readRateLimit(env, request, scope, policy) {
+  if (!env.DB) return { allowed: true, retryAfter: 0 };
+  await ensureSchema(env.DB);
+
+  const now = Math.floor(Date.now() / 1000);
+  const rateKey = await rateLimitKey(env, request, scope);
+  const current = await env.DB.prepare(`
+    SELECT count, reset_at
+    FROM rate_limits
+    WHERE rate_key = ?
+  `).bind(rateKey).first();
+
+  if (!current || Number(current.reset_at || 0) <= now || Number(current.count || 0) < policy.limit) {
+    return { allowed: true, retryAfter: 0 };
+  }
+
+  return {
+    allowed: false,
+    retryAfter: Math.max(1, Number(current.reset_at || now) - now),
+    message: policy.message
+  };
+}
+
+async function clearRateLimit(env, request, scope) {
+  if (!env.DB) return;
+  await ensureSchema(env.DB);
+  const rateKey = await rateLimitKey(env, request, scope);
+  await env.DB.prepare("DELETE FROM rate_limits WHERE rate_key = ?").bind(rateKey).run();
+}
+
+async function rateLimitKey(env, request, scope) {
+  const clientIp =
+    request.headers.get("CF-Connecting-IP") ||
+    request.headers.get("X-Forwarded-For")?.split(",")[0]?.trim() ||
+    "";
+  const client = clientIp || `ua:${request.headers.get("User-Agent") || "unknown-client"}`;
+  const salt = String(env.RATE_LIMIT_SALT || env.ADMIN_PASSWORD || "swrm-payment-store");
+  const encoder = new TextEncoder();
+  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(`${salt}|${scope}|${client}`));
+  return `${scope}:${bufferToHex(digest)}`;
+}
+
+function rateLimitResponse(rateLimit, origin) {
+  return jsonResponse(
+    { error: rateLimit.message || "Too many requests. Please try again later." },
+    {
+      status: 429,
+      origin,
+      headers: { "Retry-After": String(rateLimit.retryAfter || 60) }
+    }
+  );
+}
+
 async function verifyAdminRequest(request, env) {
   if (!env.ADMIN_PASSWORD) {
     return { ok: false, status: 503, error: "Admin password is not configured." };
+  }
+
+  const currentLimit = await readRateLimit(env, request, "admin", rateLimitPolicies.admin);
+  if (!currentLimit.allowed) {
+    return {
+      ok: false,
+      status: 429,
+      error: rateLimitPolicies.admin.message,
+      retryAfter: currentLimit.retryAfter
+    };
   }
 
   const header = request.headers.get("Authorization") || "";
   const provided = header.replace(/^Bearer\s+/i, "").trim();
   const valid = await verifySecret(provided, env.ADMIN_PASSWORD);
 
-  return valid
-    ? { ok: true }
-    : { ok: false, status: 401, error: "Admin password is incorrect." };
+  if (valid) {
+    await clearRateLimit(env, request, "admin");
+    return { ok: true };
+  }
+
+  const failedLimit = await consumeRateLimit(env, request, "admin", rateLimitPolicies.admin);
+  return failedLimit.allowed
+    ? { ok: false, status: 401, error: "Admin password is incorrect." }
+    : {
+        ok: false,
+        status: 429,
+        error: rateLimitPolicies.admin.message,
+        retryAfter: failedLimit.retryAfter
+      };
 }
 
 async function verifySecret(provided, expected) {
@@ -1286,12 +1463,23 @@ function corsHeaders(origin) {
   return headers;
 }
 
+function securityHeaders() {
+  return {
+    "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()"
+  };
+}
+
 function jsonResponse(payload, options = {}) {
   return new Response(JSON.stringify(payload), {
     status: options.status || 200,
     headers: {
       "Content-Type": "application/json",
-      ...corsHeaders(options.origin || "")
+      ...securityHeaders(),
+      ...corsHeaders(options.origin || ""),
+      ...(options.headers || {})
     }
   });
 }

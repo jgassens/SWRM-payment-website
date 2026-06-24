@@ -379,6 +379,7 @@ function OrderCard({ order }) {
   const contactHref = `mailto:${order.email}?subject=${encodeURIComponent(
     "SWRM 2026 sponsorship logo and materials"
   )}`;
+  const websiteHref = safeExternalUrl(order.website);
 
   return (
     <article className="order-card">
@@ -392,9 +393,13 @@ function OrderCard({ order }) {
             {order.phone ? ` · ${order.phone}` : ""}
           </p>
           {order.website ? (
-            <a className="order-website" href={order.website} target="_blank" rel="noreferrer">
-              {order.website}
-            </a>
+            websiteHref ? (
+              <a className="order-website" href={websiteHref} target="_blank" rel="noreferrer noopener">
+                {order.website}
+              </a>
+            ) : (
+              <span className="order-website">{order.website}</span>
+            )
           ) : null}
         </div>
         <div className="order-total">
@@ -767,4 +772,19 @@ function filterOrders(orders, query, status) {
 
 function isDemoOrder(order) {
   return Boolean(order?.isDemo || order?.checkoutMode === "demo" || order?.status === "demo");
+}
+
+// Vendor-supplied website values are rendered as clickable links in the admin
+// order book. Only allow http(s) URLs through so a crafted value such as
+// "javascript:..." can never become an executable href in the admin's session.
+function safeExternalUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const candidate = /^[a-z][a-z0-9+.-]*:/i.test(raw) ? raw : `https://${raw}`;
+  try {
+    const url = new URL(candidate);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : "";
+  } catch {
+    return "";
+  }
 }

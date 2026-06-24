@@ -16,8 +16,14 @@ const demoStripe = isStripeTestSecret(demoStripeSecret)
   ? new Stripe(demoStripeSecret, { apiVersion: "2026-02-25.clover" })
   : null;
 const requiredVendorMessage = "Organization, contact name, email, phone, and website are required before checkout.";
+const liveCheckoutExpirySeconds = 31 * 60;
 
 app.use(express.json({ limit: "1mb" }));
+app.use((req, res, next) => {
+  const headers = req.path.startsWith("/api") ? apiSecurityHeaders() : appSecurityHeaders();
+  Object.entries(headers).forEach(([key, value]) => res.setHeader(key, value));
+  next();
+});
 
 app.get("/api/health", (_req, res) => {
   res.json({
@@ -68,6 +74,7 @@ app.post("/api/create-checkout-session", async (req, res) => {
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       customer_email: cleanVendor.email,
+      expires_at: Math.floor(Date.now() / 1000) + liveCheckoutExpirySeconds,
       client_reference_id: cleanVendor.organization.slice(0, 200),
       line_items: items.map(({ item, quantity }) => ({
         quantity,
@@ -240,16 +247,43 @@ server.on("error", (error) => {
   process.exitCode = 1;
 });
 
+function apiSecurityHeaders() {
+  return {
+    "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()"
+  };
+}
+
+function appSecurityHeaders() {
+  return {
+    "Content-Security-Policy":
+      "default-src 'self'; connect-src 'self' https://swrm-payment-checkout.jgassens.workers.dev http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*; img-src 'self' data:; script-src 'self'; style-src 'self' 'unsafe-inline'; base-uri 'self'; form-action 'self' https://checkout.stripe.com; object-src 'none'",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()"
+  };
+}
+
 function normalizeCart(cart) {
   if (!Array.isArray(cart)) return [];
 
-  return cart
-    .map((entry) => {
-      const item = catalogById.get(String(entry.id));
-      const quantity = Math.max(1, Math.min(Number(entry.quantity) || 1, 99));
-      return item ? { item, quantity } : null;
-    })
-    .filter(Boolean);
+  // Merge duplicate ids so each package is a single line item (matches the Worker).
+  const merged = new Map();
+  for (const entry of cart) {
+    const item = catalogById.get(String(entry?.id || ""));
+    if (!item) continue;
+    const quantity = Math.max(1, Math.min(Number(entry?.quantity) || 1, 99));
+    const existing = merged.get(item.id);
+    if (existing) {
+      existing.quantity = Math.min(99, existing.quantity + quantity);
+    } else {
+      merged.set(item.id, { item, quantity });
+    }
+  }
+
+  return Array.from(merged.values());
 }
 
 function normalizeVendor(vendor = {}) {
