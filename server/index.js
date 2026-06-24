@@ -15,6 +15,7 @@ const demoStripeSecret = resolveDemoStripeSecret(process.env);
 const demoStripe = isStripeTestSecret(demoStripeSecret)
   ? new Stripe(demoStripeSecret, { apiVersion: "2026-02-25.clover" })
   : null;
+const requiredVendorMessage = "Organization, contact name, email, phone, and website are required before checkout.";
 
 app.use(express.json({ limit: "1mb" }));
 
@@ -49,9 +50,9 @@ app.post("/api/create-checkout-session", async (req, res) => {
       return res.status(400).json({ error: "Select at least one sponsorship item." });
     }
 
-    if (!cleanVendor.organization || !cleanVendor.contactName || !cleanVendor.email) {
+    if (!hasRequiredVendorFields(cleanVendor)) {
       return res.status(400).json({
-        error: "Organization, contact name, and email are required before checkout."
+        error: requiredVendorMessage
       });
     }
 
@@ -116,9 +117,9 @@ app.post("/api/create-demo-checkout-session", async (req, res) => {
       return res.status(400).json({ error: "Select at least one sponsorship item." });
     }
 
-    if (!cleanVendor.organization || !cleanVendor.contactName || !cleanVendor.email) {
+    if (!hasRequiredVendorFields(cleanVendor)) {
       return res.status(400).json({
-        error: "Organization, contact name, and email are required before checkout."
+        error: requiredVendorMessage
       });
     }
 
@@ -260,6 +261,10 @@ function normalizeVendor(vendor = {}) {
     website: clean(vendor.website),
     notes: clean(vendor.notes)
   };
+}
+
+function hasRequiredVendorFields(vendor) {
+  return Boolean(vendor.organization && vendor.contactName && vendor.email && vendor.phone && vendor.website);
 }
 
 function clean(value) {

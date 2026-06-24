@@ -607,6 +607,10 @@ label {
   text-transform: uppercase;
 }
 
+.required-marker {
+  color: var(--gold);
+}
+
 input,
 select {
   width: 100%;

@@ -7,6 +7,7 @@ const defaultAllowedOrigins = [
   "https://jgassens.github.io"
 ];
 const validCategoryIds = new Set(categories.map((category) => category.id));
+const requiredVendorMessage = "Organization, contact name, email, phone, and website are required before checkout.";
 
 class InventoryError extends Error {
   constructor(message) {
@@ -130,9 +131,9 @@ async function handleCheckout(request, env, origin) {
     );
   }
 
-  if (!vendor.organization || !vendor.contactName || !vendor.email) {
+  if (!hasRequiredVendorFields(vendor)) {
     return jsonResponse(
-      { error: "Organization, contact name, and email are required before checkout." },
+      { error: requiredVendorMessage },
       { status: 400, origin }
     );
   }
@@ -183,9 +184,9 @@ async function handleDemoCheckout(request, env, origin) {
     );
   }
 
-  if (!vendor.organization || !vendor.contactName || !vendor.email) {
+  if (!hasRequiredVendorFields(vendor)) {
     return jsonResponse(
-      { error: "Organization, contact name, and email are required before checkout." },
+      { error: requiredVendorMessage },
       { status: 400, origin }
     );
   }
@@ -1108,6 +1109,10 @@ function normalizeVendor(vendor = {}) {
     website: clean(vendor.website, 500),
     notes: clean(vendor.notes, 1000)
   };
+}
+
+function hasRequiredVendorFields(vendor) {
+  return Boolean(vendor.organization && vendor.contactName && vendor.email && vendor.phone && vendor.website);
 }
 
 function parseObject(value) {

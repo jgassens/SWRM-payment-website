@@ -36,6 +36,7 @@ const pendingDemoOrderStorageKey = "swrm-demo-pending-order-v1";
 const demoOrdersStorageKey = "swrm-demo-orders-v1";
 const completedDemoOrderIdsStorageKey = "swrm-demo-completed-order-ids-v1";
 const forceDemoMode = true;
+const requiredVendorFields = ["organization", "contactName", "email", "phone", "website"];
 
 export default function App() {
   const currentRoute = window.location.pathname;
@@ -607,9 +608,7 @@ function CartPanel({
   const canCheckout =
     hasBoothPath &&
     cartLines.length > 0 &&
-    vendor.organization.trim() &&
-    vendor.contactName.trim() &&
-    vendor.email.trim();
+    requiredVendorFields.every((field) => vendor[field].trim());
 
   return (
     <aside id="checkout" className="cart-panel" aria-label="Vendor registration and cart">
@@ -620,45 +619,52 @@ function CartPanel({
 
       <div className="form-grid">
         <label>
-          Organization
+          Organization <span className="required-marker" aria-hidden="true">*</span>
           <input
             value={vendor.organization}
             onChange={(event) => onVendorChange("organization", event.target.value)}
             autoComplete="organization"
+            required
           />
         </label>
         <label>
-          Contact name
+          Contact name <span className="required-marker" aria-hidden="true">*</span>
           <input
             value={vendor.contactName}
             onChange={(event) => onVendorChange("contactName", event.target.value)}
             autoComplete="name"
+            required
           />
         </label>
         <label>
-          Email
+          Email <span className="required-marker" aria-hidden="true">*</span>
           <input
             value={vendor.email}
             onChange={(event) => onVendorChange("email", event.target.value)}
             autoComplete="email"
             type="email"
+            required
           />
         </label>
         <label>
-          Phone
+          Phone <span className="required-marker" aria-hidden="true">*</span>
           <input
             value={vendor.phone}
             onChange={(event) => onVendorChange("phone", event.target.value)}
             autoComplete="tel"
+            type="tel"
+            required
           />
         </label>
         <label className="span-all">
-          Website
+          Website <span className="required-marker" aria-hidden="true">*</span>
           <input
             value={vendor.website}
             onChange={(event) => onVendorChange("website", event.target.value)}
             autoComplete="url"
+            inputMode="url"
             placeholder="https://"
+            required
           />
         </label>
         <label className="span-all">
