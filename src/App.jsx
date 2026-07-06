@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import AdminApp from "./Admin.jsx";
 import {
   apiUrl,
@@ -43,7 +43,10 @@ const demoOrderStorageKey = "swrm-demo-last-order-v1";
 const pendingDemoOrderStorageKey = "swrm-demo-pending-order-v1";
 const demoOrdersStorageKey = "swrm-demo-orders-v1";
 const completedDemoOrderIdsStorageKey = "swrm-demo-completed-order-ids-v1";
-const forceDemoMode = true;
+// Production builds leave this unset so real checkout is the default; visitors can still
+// opt into the test flow with ?demo=1. Set VITE_FORCE_DEMO_MODE=true only to force the whole
+// storefront into demo mode (e.g. a staging deploy that must never take real payments).
+const forceDemoMode = String(import.meta.env.VITE_FORCE_DEMO_MODE ?? "").toLowerCase() === "true";
 const requiredVendorFields = ["organization", "contactName", "email", "phone", "website"];
 const initialEmailVerification = {
   status: "idle",
@@ -78,6 +81,7 @@ export default function App() {
 function Storefront({ isDemoMode }) {
   const [activeCategory, setActiveCategory] = useState("recommended");
   const [selectedBoothPath, setSelectedBoothPath] = useState(null);
+  const [boothUpgradePrompt, setBoothUpgradePrompt] = useState({ open: false, boothId: null });
   const [baseCatalog, setBaseCatalog] = useState(createInitialCatalog);
   const [demoInventory, setDemoInventory] = useState(() =>
     isDemoMode ? readStoredDemoInventory() : null
@@ -220,6 +224,29 @@ function Storefront({ isDemoMode }) {
       return;
     }
     addToCart(choiceId, { replaceBooth: true, nextBoothPath: choiceId });
+
+    // Picking a booth used to auto-scroll straight past the premium/corner upgrade
+    // option, so vendors could miss it entirely. Interrupt with an explicit
+    // accept/decline prompt instead, unless the addon is already in the cart (carried
+    // over from a prior booth choice) or nothing is available to offer.
+    const availableAddons = boothAddonPackages.filter((item) => !isSoldOut(item));
+    const alreadyHasAddon = cartLines.some((line) => isBoothAddon(line.id) && line.quantity > 0);
+
+    if (availableAddons.length > 0 && !alreadyHasAddon) {
+      setBoothUpgradePrompt({ open: true, boothId: choiceId });
+    } else {
+      scrollToSponsorMenu();
+    }
+  }
+
+  function declineBoothUpgrade() {
+    setBoothUpgradePrompt({ open: false, boothId: null });
+    scrollToSponsorMenu();
+  }
+
+  function acceptBoothUpgrade(addonId) {
+    addToCart(addonId);
+    setBoothUpgradePrompt({ open: false, boothId: null });
     scrollToSponsorMenu();
   }
 
@@ -437,6 +464,14 @@ function Storefront({ isDemoMode }) {
 
   return (
     <div className="app-shell">
+      {boothUpgradePrompt.open ? (
+        <BoothUpgradePrompt
+          boothItem={catalogById.get(boothUpgradePrompt.boothId)}
+          addonPackages={boothAddonPackages.filter((item) => !isSoldOut(item))}
+          onAdd={acceptBoothUpgrade}
+          onDecline={declineBoothUpgrade}
+        />
+      ) : null}
       <ConferenceHeader cartCount={cartCount} isDemoMode={isDemoMode} />
       <main className="page">
         <IntroBlock />
@@ -784,6 +819,77 @@ function BoothPathStep({
   );
 }
 
+function BoothUpgradePrompt({ boothItem, addonPackages, onAdd, onDecline }) {
+  const dialogRef = useRef(null);
+
+  useEffect(() => {
+    dialogRef.current?.focus();
+    const originalOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    function handleKeyDown(event) {
+      // Escape counts as an explicit "no thanks", not a silent dismissal.
+      if (event.key === "Escape") onDecline();
+    }
+    document.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.body.style.overflow = originalOverflow;
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [onDecline]);
+
+  return (
+    <div className="booth-upgrade-overlay">
+      <div
+        className="booth-upgrade-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="booth-upgrade-title"
+        ref={dialogRef}
+        tabIndex={-1}
+      >
+        <p className="section-label">Optional booth upgrade</p>
+        <h2 id="booth-upgrade-title">
+          Upgrade {boothItem ? boothItem.name : "your booth"}?
+        </h2>
+        <p className="booth-upgrade-copy">
+          Premium and corner placements are limited. Add one now, or choose "No
+          thanks" to continue to the sponsorship menu without it.
+        </p>
+        <div className="booth-upgrade-options">
+          {addonPackages.map((item) => (
+            <div className="booth-upgrade-option" key={item.id}>
+              <div>
+                <span className="card-topline">
+                  <span>{inventoryLabel(item)}</span>
+                  <span>{formatCurrency(item.price)}</span>
+                </span>
+                <strong>{item.name}</strong>
+                <p>{item.summary}</p>
+              </div>
+              <button
+                type="button"
+                className="checkout-button compact-button"
+                onClick={() => onAdd(item.id)}
+              >
+                Add upgrade
+              </button>
+            </div>
+          ))}
+        </div>
+        <button
+          type="button"
+          className="outline-button compact-button booth-upgrade-decline"
+          onClick={onDecline}
+        >
+          No thanks, continue
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function CategoryTabs({ activeCategory, onChange, categoriesToShow = categories, disabled = false }) {
   return (
     <div id="packages" className="category-tabs" role="tablist" aria-label="Package categories">
@@ -934,6 +1040,7 @@ function CartPanel({
             value={vendor.notes}
             onChange={(event) => onVendorChange("notes", event.target.value)}
             placeholder="Optional: logo contact, PO notes, ad file timing, or sponsorship details"
+            maxLength={500}
           />
         </label>
       </div>
@@ -1375,9 +1482,20 @@ function reserveDemoInventory(inventory, cartLines) {
   };
 }
 
+function generateDemoOrderId() {
+  // Random, not time-based: two demo checkouts in the same millisecond would otherwise
+  // collide on the server's primary key, and a predictable id could be pre-claimed to make
+  // another visitor's demo checkout fail.
+  const token =
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  return `demo_${token}`;
+}
+
 function createDemoOrder({ cartLines, total, vendor, emailVerification }) {
   return {
-    id: `demo_${Date.now().toString(36)}`,
+    id: generateDemoOrderId(),
     createdAt: new Date().toISOString(),
     vendor: {
       organization: cleanDemoValue(vendor.organization),

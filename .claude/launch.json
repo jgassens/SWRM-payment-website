@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "App dev server (Express + Vite)",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["dev"],
+      "port": 5173
+    },
+    {
+      "name": "App dev server (node direct)",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["server/index.js"],
+      "port": 5173
+    },
+    {
+      "name": "Cloudflare Worker (wrangler dev)",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["exec", "wrangler", "dev"],
+      "port": 8787
+    }
+  ]
+}

@@ -15,13 +15,15 @@ const emailVerificationTokenExpirySeconds = 2 * 60 * 60;
 const maxEmailVerificationAttempts = 5;
 const liveCheckoutExpirySeconds = 31 * 60;
 const boothAddonIds = new Set(["booth-premium-corner"]);
-const physicalBoothIds = new Set([
-  "booth-standard-early",
-  "booth-standard",
-  "booth-academic-grad",
-  "booth-nonprofit"
-]);
 const boothUpgradeRequiresBoothMessage = "Premium / corner upgrade requires a booth selection.";
+const earlyBirdBoothId = "booth-standard-early";
+// Aug 2 2026 00:00 UTC: early-bird commercial booth pricing is valid through Aug 1.
+const commercialEarlyBirdEndsAt = Date.UTC(2026, 7, 2);
+const earlyBirdEndedMessage =
+  "Early-bird booth pricing ended on August 1. Choose the standard booth instead.";
+const maxConcurrentPendingCheckouts = 5;
+const tooManyPendingCheckoutsMessage =
+  "You already have several checkouts in progress. Finish or cancel one before starting another.";
 const rateLimitPolicies = {
   checkout: {
     limit: 8,
@@ -32,6 +34,11 @@ const rateLimitPolicies = {
     limit: 20,
     windowSeconds: 10 * 60,
     message: "Too many demo checkout attempts. Please wait a few minutes and try again."
+  },
+  confirmCheckout: {
+    limit: 30,
+    windowSeconds: 10 * 60,
+    message: "Too many confirmation attempts. Please wait a few minutes and try again."
   },
   emailVerification: {
     limit: 6,
@@ -185,6 +192,17 @@ export default {
         );
       })
     );
+    ctx.waitUntil(
+      purgeStaleRecords(env).catch((error) => {
+        console.error(
+          JSON.stringify({
+            level: "error",
+            message: "scheduled_purge_failed",
+            error: error instanceof Error ? error.message : "Unknown error"
+          })
+        );
+      })
+    );
   }
 };
 
@@ -285,7 +303,21 @@ async function handleCheckout(request, env, origin) {
     );
   }
 
+  const availabilityError = validateCartAvailability(items);
+  if (availabilityError) {
+    return jsonResponse({ error: availabilityError }, { status: 400, origin });
+  }
+
   const emailVerification = await requireVerifiedEmail(env, vendor, body?.emailVerification);
+
+  const pendingError = await checkConcurrentPendingLimit(env, vendor.email);
+  if (pendingError) {
+    return jsonResponse(
+      { error: pendingError },
+      { status: 429, origin, headers: { "Retry-After": String(liveCheckoutExpirySeconds) } }
+    );
+  }
+
   const reservationId = crypto.randomUUID();
   let inventoryReserved = false;
 
@@ -351,6 +383,11 @@ async function handleDemoCheckout(request, env, origin) {
     );
   }
 
+  const availabilityError = validateCartAvailability(items);
+  if (availabilityError) {
+    return jsonResponse({ error: availabilityError }, { status: 400, origin });
+  }
+
   const emailVerification = await requireVerifiedEmail(env, vendor, body?.emailVerification);
   const demoOrderId = clean(body?.demoOrderId, 120) || `demo_${crypto.randomUUID()}`;
   const session = await createCheckoutSession(env, items, vendor, demoOrderId, {
@@ -374,6 +411,16 @@ async function handleDemoCheckout(request, env, origin) {
 }
 
 async function handleConfirmCheckoutSession(request, env, origin) {
+  const rateLimit = await consumeRateLimit(
+    env,
+    request,
+    "confirmCheckout",
+    rateLimitPolicies.confirmCheckout
+  );
+  if (!rateLimit.allowed) {
+    return rateLimitResponse(rateLimit, origin);
+  }
+
   const body = await request.json().catch(() => null);
   const sessionId = clean(body?.sessionId, 500);
 
@@ -500,10 +547,14 @@ async function createCheckoutSession(env, items, vendor, reservationId, options 
     form.set(`line_items[${index}][price_data][currency]`, "usd");
     form.set(`line_items[${index}][price_data][unit_amount]`, String(item.priceCents));
     form.set(`line_items[${index}][price_data][product_data][name]`, `SWRM 2026 - ${item.name}`);
-    form.set(
-      `line_items[${index}][price_data][product_data][description]`,
-      item.summary.slice(0, 300)
-    );
+    const description = clean(item.summary, 300);
+    if (description) {
+      // Stripe rejects an empty product description, which an admin-created package can have.
+      form.set(
+        `line_items[${index}][price_data][product_data][description]`,
+        description
+      );
+    }
     form.set(
       `line_items[${index}][price_data][product_data][metadata][package_id]`,
       item.id
@@ -572,13 +623,27 @@ async function retrieveCheckoutSession(env, sessionId, stripeSecret) {
 }
 
 async function handleStripeWebhook(request, env) {
-  if (!env.STRIPE_WEBHOOK_SECRET) {
+  // Live and test Stripe environments sign webhooks with separate secrets. Accept either so
+  // the same endpoint can back both the live checkout and the test/demo checkout. Only
+  // STRIPE_WEBHOOK_SECRET is required; STRIPE_DEMO_WEBHOOK_SECRET is optional.
+  const webhookSecrets = [env.STRIPE_WEBHOOK_SECRET, env.STRIPE_DEMO_WEBHOOK_SECRET]
+    .map((secret) => String(secret || "").trim())
+    .filter(Boolean);
+
+  if (webhookSecrets.length === 0) {
     return jsonResponse({ error: "Stripe webhook secret is not configured." }, { status: 503 });
   }
 
   const signature = request.headers.get("Stripe-Signature") || "";
   const payload = await request.text();
-  const verified = await verifyStripeSignature(payload, signature, env.STRIPE_WEBHOOK_SECRET);
+
+  let verified = false;
+  for (const secret of webhookSecrets) {
+    if (await verifyStripeSignature(payload, signature, secret)) {
+      verified = true;
+      break;
+    }
+  }
 
   if (!verified) {
     return jsonResponse({ error: "Invalid signature." }, { status: 400 });
@@ -593,7 +658,12 @@ async function handleStripeWebhook(request, env) {
   }
 
   if (event.type === "checkout.session.completed" || event.type === "checkout.session.async_payment_succeeded") {
-    await recordCompletedCheckout(env, reservationId, session);
+    // Only record as paid once Stripe reports the payment settled. `completed` fires for
+    // async payment methods (ACH, bank transfer, etc.) while payment_status is still
+    // "unpaid"; recording those as paid would consume inventory for money not yet received.
+    if (isPaidCheckoutSession(session)) {
+      await recordCompletedCheckout(env, reservationId, session);
+    }
   }
 
   if (event.type === "checkout.session.expired" || event.type === "checkout.session.async_payment_failed") {
@@ -643,11 +713,66 @@ async function normalizeCart(cart, env) {
   return Array.from(merged.values());
 }
 
+// Derive "physical booth" from the package category (matching the storefront) instead of a
+// hard-coded id list, so a booth package added later through the admin UI still satisfies the
+// premium/corner upgrade dependency.
 function validateCartDependencies(items) {
-  const itemIds = new Set(items.map(({ item }) => item.id));
-  const hasBoothUpgrade = Array.from(boothAddonIds).some((id) => itemIds.has(id));
-  const hasPhysicalBooth = Array.from(physicalBoothIds).some((id) => itemIds.has(id));
+  const hasBoothUpgrade = items.some(({ item }) => boothAddonIds.has(item.id));
+  const hasPhysicalBooth = items.some(
+    ({ item }) =>
+      !boothAddonIds.has(item.id) &&
+      (item.category === "booths" || String(item.id).startsWith("booth-"))
+  );
   return hasBoothUpgrade && !hasPhysicalBooth ? boothUpgradeRequiresBoothMessage : "";
+}
+
+// The storefront hides the early-bird booth after Aug 1 using the browser clock, so a
+// crafted request could still buy it at the discounted price. Enforce the deadline on the
+// server, which is the only clock that matters for pricing.
+function validateCartAvailability(items) {
+  const hasEarlyBirdBooth = items.some(({ item }) => item.id === earlyBirdBoothId);
+  if (hasEarlyBirdBooth && Date.now() >= commercialEarlyBirdEndsAt) {
+    return earlyBirdEndedMessage;
+  }
+  return "";
+}
+
+// Cap how many live checkouts a single vendor email can hold open at once. Each pending
+// checkout reserves real inventory for up to 31 minutes, so without a cap one verified
+// email could repeatedly open checkouts and keep finite booths/tiers permanently "sold
+// out" without ever paying.
+async function checkConcurrentPendingLimit(env, email) {
+  if (!env.DB) return "";
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail) return "";
+  await ensureSchema(env.DB);
+
+  const now = Math.floor(Date.now() / 1000);
+  const row = await env.DB.prepare(`
+    SELECT COUNT(*) AS count
+    FROM checkout_sessions
+    WHERE lower(email) = ?
+      AND status = 'pending'
+      AND checkout_mode = 'live'
+      AND (expires_at IS NULL OR expires_at > ?)
+  `).bind(normalizedEmail, now).first();
+
+  return Number(row?.count || 0) >= maxConcurrentPendingCheckouts ? tooManyPendingCheckoutsMessage : "";
+}
+
+// Housekeeping for the cron trigger: expired rate-limit buckets are pure churn, and email
+// verification rows hold vendor email addresses, so drop them once they are well past use.
+async function purgeStaleRecords(env) {
+  if (!env.DB) return;
+  await ensureSchema(env.DB);
+
+  const now = Math.floor(Date.now() / 1000);
+  const emailRetentionSeconds = 7 * 24 * 60 * 60;
+  await env.DB.prepare("DELETE FROM rate_limits WHERE reset_at < ?").bind(now).run();
+  await env.DB
+    .prepare("DELETE FROM email_verifications WHERE created_at < ?")
+    .bind(now - emailRetentionSeconds)
+    .run();
 }
 
 async function createEmailVerification(env, rawEmail, rawCheckoutMode) {
@@ -1089,6 +1214,7 @@ async function recordCompletedCheckout(env, reservationId, session) {
         billing_address_json = ?,
         updated_at = ?
     WHERE id = ?
+      AND status IN ('pending', 'paid', 'demo')
   `).bind(
     nextStatus,
     checkoutMode,
@@ -1255,12 +1381,21 @@ async function releaseReservationIfPending(env, reservationId, nextStatus) {
   `).bind(reservationId).first();
   if (!session || session.status !== "pending") return false;
 
-  const isDemo = session.checkout_mode === "demo" || isStripeTestSessionId(session.stripe_session_id);
+  // Atomically claim the pending -> nextStatus transition. The cron sweep, the Stripe
+  // `expired` webhook, and the admin "Release expired holds" button can all fire for the
+  // same reservation at once; without this guard each would independently return the
+  // inventory and oversell the package. Only the caller that actually flips the row (one
+  // row changed) proceeds to release stock.
+  const now = Math.floor(Date.now() / 1000);
+  const claim = await env.DB.prepare(`
+    UPDATE checkout_sessions
+    SET status = ?, updated_at = ?
+    WHERE id = ? AND status = 'pending'
+  `).bind(nextStatus, now, reservationId).run();
+  if ((claim.meta?.changes || 0) !== 1) return false;
 
-  if (isDemo) {
-    await markReservationStatus(env, reservationId, nextStatus);
-    return true;
-  }
+  const isDemo = session.checkout_mode === "demo" || isStripeTestSessionId(session.stripe_session_id);
+  if (isDemo) return true;
 
   const { results } = await env.DB.prepare(`
     SELECT package_id, quantity
@@ -1274,18 +1409,7 @@ async function releaseReservationIfPending(env, reservationId, nextStatus) {
   }));
 
   await releaseInventory(env, items);
-  await markReservationStatus(env, reservationId, nextStatus);
   return true;
-}
-
-async function markReservationStatus(env, reservationId, status) {
-  if (!env.DB || !reservationId) return;
-  const now = Math.floor(Date.now() / 1000);
-  await env.DB.prepare(`
-    UPDATE checkout_sessions
-    SET status = ?, updated_at = ?
-    WHERE id = ?
-  `).bind(status, now, reservationId).run();
 }
 
 async function findReservationId(env, stripeSessionId) {
@@ -1563,7 +1687,9 @@ function normalizeVendor(vendor = {}) {
     email: clean(vendor.email, 500),
     phone: clean(vendor.phone, 500),
     website: clean(vendor.website, 500),
-    notes: clean(vendor.notes, 1000)
+    // Capped at 500 to stay within Stripe's per-metadata-value limit; a longer note
+    // would otherwise make every checkout attempt fail with an opaque Stripe error.
+    notes: clean(vendor.notes, 500)
   };
 }
 
@@ -1809,17 +1935,17 @@ async function verifySecret(provided, expected) {
 }
 
 async function verifyStripeSignature(payload, header, secret) {
-  const parts = Object.fromEntries(
-    header
-      .split(",")
-      .map((part) => part.split("="))
-      .filter((part) => part.length === 2)
-      .map(([key, value]) => [key.trim(), value.trim()])
-  );
-  const timestamp = Number(parts.t || 0);
-  const signature = parts.v1 || "";
+  const pairs = header
+    .split(",")
+    .map((part) => part.split("="))
+    .filter((part) => part.length === 2)
+    .map(([key, value]) => [key.trim(), value.trim()]);
+  const timestamp = Number(pairs.find(([key]) => key === "t")?.[1] || 0);
+  // During a webhook-secret rotation Stripe signs each event with more than one v1
+  // signature; accept the event if any of them matches so valid events are not dropped.
+  const signatures = pairs.filter(([key]) => key === "v1").map(([, value]) => value);
 
-  if (!timestamp || !signature) return false;
+  if (!timestamp || signatures.length === 0) return false;
   if (Math.abs(Math.floor(Date.now() / 1000) - timestamp) > 300) return false;
 
   const encoder = new TextEncoder();
@@ -1831,7 +1957,8 @@ async function verifyStripeSignature(payload, header, secret) {
     ["sign"]
   );
   const digest = await crypto.subtle.sign("HMAC", key, encoder.encode(`${timestamp}.${payload}`));
-  return constantTimeEqualHex(bufferToHex(digest), signature);
+  const expected = bufferToHex(digest);
+  return signatures.some((signature) => constantTimeEqualHex(expected, signature));
 }
 
 function constantTimeEqualHex(left, right) {

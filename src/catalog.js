@@ -436,6 +436,15 @@ export const packages = [
     availability: "multiple",
     summary: "Sponsor undergraduate poster prize recognition.",
     included: ["Named undergraduate poster prize"]
+  },
+  {
+    id: "community-donation",
+    category: "student",
+    name: "Anonymously donate to support our conference",
+    price: 1,
+    availability: "unlimited",
+    summary: "Make a $1 contribution to help fund SWRM 2026 programming and student participation.",
+    included: ["Supports SWRM 2026 conference programming"]
   }
 ];
 

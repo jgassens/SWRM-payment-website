@@ -6,3 +6,6 @@ onlyBuiltDependencies:
   - esbuild
   - sharp
   - workerd
+overrides:
+  # Force the patched esbuild (GHSA-g7r4-m6w7-qqqr affects the dev server in <0.28.1).
+  esbuild: ">=0.28.1"

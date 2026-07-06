@@ -8,7 +8,22 @@ const app = express();
 const port = Number(process.env.PORT || 5173);
 const host = process.env.HOST || "127.0.0.1";
 const isProduction = process.env.NODE_ENV === "production";
-const stripeSecret = process.env.STRIPE_SECRET_KEY;
+const rawStripeSecret = process.env.STRIPE_SECRET_KEY;
+// This Express server is the local dev / mock harness (no rate limiting, no D1). It must
+// never create real charges with a live key. If one is present, refuse to use it and fall
+// back to mock checkout unless explicitly overridden. Live payments run on the Cloudflare
+// Worker, where the key lives as a Worker secret.
+const liveKeyBlocked =
+  String(rawStripeSecret || "").startsWith("sk_live_") &&
+  String(process.env.ALLOW_LIVE_STRIPE_KEY || "").toLowerCase() !== "true";
+if (liveKeyBlocked) {
+  console.warn(
+    "[SWRM] A live Stripe secret key (sk_live_...) was found in the environment. The dev " +
+      "server will NOT use it; live checkout runs in mock mode. Use a test key (sk_test_...) " +
+      "for local Stripe testing, or set ALLOW_LIVE_STRIPE_KEY=true to override."
+  );
+}
+const stripeSecret = liveKeyBlocked ? null : rawStripeSecret;
 const stripe = stripeSecret
   ? new Stripe(stripeSecret, { apiVersion: "2026-02-25.clover" })
   : null;
@@ -63,14 +78,17 @@ app.post("/api/email-verifications", async (req, res) => {
     }
 
     const verification = await createLocalEmailVerification(email, req.body?.checkoutMode);
-    console.info(`Local email verification code for ${email}: ${verification.debugCode}`);
+    if (!isProduction) {
+      console.info(`Local email verification code for ${email}: ${verification.debugCode}`);
+    }
     return res.json({
       ok: true,
       email,
       verificationId: verification.id,
       expiresAt: verification.expiresAt,
       sent: false,
-      debugCode: verification.debugCode
+      // Only expose the code in local dev; in production this harness must not hand out codes.
+      ...(isProduction ? {} : { debugCode: verification.debugCode })
     });
   } catch (error) {
     console.error(error);
@@ -220,7 +238,7 @@ app.post("/api/create-demo-checkout-session", async (req, res) => {
       });
     }
 
-    const orderId = clean(demoOrderId).slice(0, 120) || `demo_${Date.now().toString(36)}`;
+    const orderId = clean(demoOrderId).slice(0, 120) || `demo_${randomHex(8)}`;
     const encodedOrderId = encodeURIComponent(orderId);
     const origin = process.env.PUBLIC_APP_URL || `${req.protocol}://${req.get("host")}`;
     const session = await demoStripe.checkout.sessions.create({
@@ -382,6 +400,14 @@ function validateCartDependencies(items) {
 async function createLocalEmailVerification(rawEmail, rawCheckoutMode) {
   const email = normalizeEmail(rawEmail);
   const now = Math.floor(Date.now() / 1000);
+
+  // Drop expired entries so this in-memory map cannot grow without bound while the dev
+  // server is running.
+  for (const [key, entry] of localEmailVerifications) {
+    if ((entry.tokenExpiresAt || entry.expiresAt || 0) < now) {
+      localEmailVerifications.delete(key);
+    }
+  }
   const expiresAt = now + emailVerificationCodeExpirySeconds;
   const id = randomHex(16);
   const code = generateVerificationCode();
