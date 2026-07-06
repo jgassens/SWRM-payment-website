@@ -475,7 +475,6 @@ function Storefront({ isDemoMode }) {
       <ConferenceHeader cartCount={cartCount} isDemoMode={isDemoMode} />
       <main className="page">
         <IntroBlock />
-        <DemoModePanel isDemoMode={isDemoMode} />
 
         <section className="commerce-grid" aria-label="SWRM sponsorship checkout">
           <div className="catalog-column">
@@ -594,40 +593,6 @@ function ConferenceHeader({ cartCount, admin = false, isDemoMode = false }) {
         </nav>
       </div>
     </header>
-  );
-}
-
-function DemoModePanel({ isDemoMode }) {
-  if (!isDemoMode) {
-    return (
-      <section className="demo-panel" aria-label="Demo checkout mode">
-        <div>
-          <p className="section-label">Demo mode</p>
-          <strong>Test the full purchase flow without touching live payments or inventory.</strong>
-          <span>
-            Demo mode uses the current catalog, opens Stripe test checkout, and keeps inventory
-            changes only in this browser until it is reset.
-          </span>
-        </div>
-        <a className="outline-button demo-action" href={`${appBase}?demo=1`}>
-          Try demo mode
-        </a>
-      </section>
-    );
-  }
-
-  return (
-    <section className="demo-panel active-demo" aria-label="Demo checkout mode is active">
-      <div>
-        <p className="section-label">Demo mode active</p>
-        <strong>Checkout uses Stripe test mode; real payments and live inventory stay untouched.</strong>
-        <span>
-          This sandbox starts from the live catalog and reduces only temporary inventory in this
-          browser after test checkout succeeds, so you can confirm the buying flow behaves like
-          the real one.
-        </span>
-      </div>
-    </section>
   );
 }
 
