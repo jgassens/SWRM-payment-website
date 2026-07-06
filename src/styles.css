@@ -860,6 +860,28 @@ label {
   margin-top: 20px;
 }
 
+.email-resend-button {
+  margin-top: 20px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--teal-dark);
+  font-size: 14px;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.email-resend-button:hover,
+.email-resend-button:focus-visible {
+  color: var(--ink);
+}
+
+.email-resend-button:disabled {
+  color: #8aa6aa;
+  cursor: not-allowed;
+}
+
 input,
 select {
   width: 100%;

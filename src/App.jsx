@@ -334,7 +334,7 @@ function Storefront({ isDemoMode }) {
         token: "",
         message: data.debugCode
           ? `Local test code: ${data.debugCode}`
-          : `Verification code sent to ${data.email || email}.`
+          : `Verification code sent to ${data.email || email}. If you do not see it within a minute, check your spam or junk folder.`
       });
     } catch (error) {
       setEmailVerification({
@@ -1112,6 +1112,12 @@ function EmailVerificationPanel({
   const busy = emailVerification.status === "sending" || emailVerification.status === "checking";
   const canSend = Boolean(normalizedEmail) && !busy;
   const canConfirm = codeSentForThisEmail && emailVerification.code.length === 6 && !busy;
+  const requestButtonLabel =
+    emailVerification.status === "sending"
+      ? "Sending..."
+      : codeSentForThisEmail
+        ? "Resend code"
+        : "Send code";
 
   return (
     <div className={`email-verification span-all ${emailVerified ? "verified" : ""}`}>
@@ -1122,15 +1128,15 @@ function EmailVerificationPanel({
       <div className="email-verification-actions">
         <button
           type="button"
-          className="outline-button compact-button"
+          className={
+            codeSentForThisEmail
+              ? "email-resend-button"
+              : "outline-button compact-button"
+          }
           onClick={onRequest}
           disabled={!canSend}
         >
-          {emailVerification.status === "sending"
-            ? "Sending..."
-            : codeSentForThisEmail
-              ? "Send new code"
-              : "Send code"}
+          {requestButtonLabel}
         </button>
         <label>
           Code
