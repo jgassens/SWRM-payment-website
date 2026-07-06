@@ -134,8 +134,8 @@ export const packages = [
     id: "booth-academic-grad",
     category: "booths",
     name: "Academic / Grad Fair booth",
-    label: "early bird $350",
-    price: 500,
+    label: "early bird $350 through Aug 1; $500 after Aug 1",
+    price: 350,
     availability: "available",
     summary: "Lower-cost booth package for academic and grad-fair exhibitors.",
     included: ["Academic recruiting or outreach presence"]
