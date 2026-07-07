@@ -99,7 +99,7 @@ export const packages = [
   {
     id: "booth-standard-early",
     category: "booths",
-    name: "Standard 8' x 10' commercial booth",
+    name: "Standard commercial booth",
     label: "early bird through Aug 1",
     price: 1500,
     availability: "deadline priced",
@@ -114,7 +114,7 @@ export const packages = [
   {
     id: "booth-standard",
     category: "booths",
-    name: "Standard 8' x 10' commercial booth",
+    name: "Standard commercial booth",
     label: "after Aug 1",
     price: 1700,
     availability: "available until Sep 15",
@@ -126,7 +126,7 @@ export const packages = [
     category: "booths",
     name: "Premium / corner upgrade",
     price: 300,
-    availability: "add-on",
+    availability: "4 available",
     summary: "Upgrade a booth selection to a premium or corner location.",
     included: ["First-paid, first-served booth assignment"]
   },
@@ -144,7 +144,8 @@ export const packages = [
     id: "booth-nonprofit",
     category: "booths",
     name: "Non-profit booth",
-    price: 500,
+    label: "early bird $350 through Aug 1; $500 after Aug 1",
+    price: 350,
     availability: "available",
     summary: "Exhibit space for non-profit organizations.",
     included: ["Standard non-profit exhibitor presence"]

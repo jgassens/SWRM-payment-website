@@ -694,29 +694,11 @@ function BoothPathStep({
               <span className="booth-card-title">{item.name}</span>
               {item.label ? <span className="item-label">{item.label}</span> : null}
               <span className="summary">{item.summary}</span>
-              {item.isCommercialCombined ? (
-                <span className="commercial-booth-details">
-                  <span className="booth-benefits">
-                    {item.included.slice(0, 2).map((benefit) => (
-                      <span key={benefit}>{benefit}</span>
-                    ))}
-                  </span>
-                  <span className="commercial-footprint">
-                    <span className="commercial-footprint-label">4 x 4 footprint</span>
-                    <span className="commercial-footprint-grid" aria-hidden="true">
-                      {Array.from({ length: 16 }, (_, index) => (
-                        <span key={index} />
-                      ))}
-                    </span>
-                  </span>
-                </span>
-              ) : (
-                <span className="booth-benefits">
-                  {item.included.slice(0, 2).map((benefit) => (
-                    <span key={benefit}>{benefit}</span>
-                  ))}
-                </span>
-              )}
+              <span className="booth-benefits">
+                {item.included.slice(0, 2).map((benefit) => (
+                  <span key={benefit}>{benefit}</span>
+                ))}
+              </span>
             </button>
           );
         })}
@@ -1771,10 +1753,7 @@ function createCommercialBoothChoice(boothPackages) {
     availability: selection.availability,
     label: priceNote,
     summary: "Commercial exhibit booth with table, chairs, power, badges, and standard exhibit support.",
-    included: [
-      "Carpeted 8' x 10' booth with pipe-and-drape",
-      "6' skirted table, two chairs, identification sign, and exhibitor registrations"
-    ],
+    included: ["Standard vendor or exhibitor presence"],
     isCommercialCombined: true
   };
 }
