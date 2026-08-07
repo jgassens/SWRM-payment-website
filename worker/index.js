@@ -17,10 +17,10 @@ const liveCheckoutExpirySeconds = 31 * 60;
 const boothAddonIds = new Set(["booth-premium-corner"]);
 const boothUpgradeRequiresBoothMessage = "Premium / corner upgrade requires a booth selection.";
 const earlyBirdBoothId = "booth-standard-early";
-// Aug 2 2026 00:00 UTC: early-bird commercial booth pricing is valid through Aug 1.
-const commercialEarlyBirdEndsAt = Date.UTC(2026, 7, 2);
+// Oct 6 2026 00:00 UTC: early-bird commercial booth pricing is valid through Oct 5.
+const commercialEarlyBirdEndsAt = Date.UTC(2026, 9, 6);
 const earlyBirdEndedMessage =
-  "Early-bird booth pricing ended on August 1. Choose the standard booth instead.";
+  "Early-bird booth pricing ended on October 5. Choose the standard booth instead.";
 const maxConcurrentPendingCheckouts = 5;
 const tooManyPendingCheckoutsMessage =
   "You already have several checkouts in progress. Finish or cancel one before starting another.";
@@ -731,7 +731,7 @@ function validateCartDependencies(items) {
   return hasBoothUpgrade && !hasPhysicalBooth ? boothUpgradeRequiresBoothMessage : "";
 }
 
-// The storefront hides the early-bird booth after Aug 1 using the browser clock, so a
+// The storefront hides the early-bird booth after Oct 5 using the browser clock, so a
 // crafted request could still buy it at the discounted price. Enforce the deadline on the
 // server, which is the only clock that matters for pricing.
 function validateCartAvailability(items) {

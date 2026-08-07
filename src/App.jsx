@@ -19,7 +19,7 @@ const commercialBoothChoiceId = "booth-commercial";
 const commercialBoothEarlyId = "booth-standard-early";
 const commercialBoothRegularId = "booth-standard";
 const commercialBoothIds = new Set([commercialBoothEarlyId, commercialBoothRegularId]);
-const commercialEarlyBirdEndsAt = new Date(2026, 7, 2).getTime();
+const commercialEarlyBirdEndsAt = new Date(2026, 9, 6).getTime();
 const menuCategoryIds = ["tiers", "programming", "digital", "meals", "branded", "student"];
 const recommendedPackageIds = [
   "meals-coffee-break",
@@ -43,6 +43,7 @@ const demoOrderStorageKey = "swrm-demo-last-order-v1";
 const pendingDemoOrderStorageKey = "swrm-demo-pending-order-v1";
 const demoOrdersStorageKey = "swrm-demo-orders-v1";
 const completedDemoOrderIdsStorageKey = "swrm-demo-completed-order-ids-v1";
+const registrationNoticeStorageKey = "swrm-registration-notice-ack-v1";
 // Production builds leave this unset so real checkout is the default; visitors can still
 // opt into the test flow with ?demo=1. Set VITE_FORCE_DEMO_MODE=true only to force the whole
 // storefront into demo mode (e.g. a staging deploy that must never take real payments).
@@ -130,6 +131,9 @@ function Storefront({ isDemoMode, isEmbedMode }) {
   const [vendor, setVendor] = useState(initialVendor);
   const [emailVerification, setEmailVerification] = useState(initialEmailVerification);
   const [checkoutState, setCheckoutState] = useState({ status: "idle", message: "" });
+  const [showRegistrationNotice, setShowRegistrationNotice] = useState(
+    () => !readRegistrationNoticeAcknowledged()
+  );
   const catalog = useMemo(
     () => (isDemoMode ? applyDemoInventory(baseCatalog, demoInventory) : baseCatalog),
     [baseCatalog, demoInventory, isDemoMode]
@@ -431,6 +435,11 @@ function Storefront({ isDemoMode, isEmbedMode }) {
     }
   }
 
+  function acknowledgeRegistrationNotice() {
+    writeRegistrationNoticeAcknowledged();
+    setShowRegistrationNotice(false);
+  }
+
   async function startCheckout() {
     if (!emailVerified) {
       setCheckoutState({
@@ -505,6 +514,9 @@ function Storefront({ isDemoMode, isEmbedMode }) {
 
   return (
     <div className={"app-shell " + (isEmbedMode ? "embed-shell" : "")}>
+      {showRegistrationNotice ? (
+        <RegistrationNoticeDialog onAcknowledge={acknowledgeRegistrationNotice} />
+      ) : null}
       {boothUpgradePrompt.open ? (
         <BoothUpgradePrompt
           boothItem={catalogById.get(boothUpgradePrompt.boothId)}
@@ -605,6 +617,44 @@ function Storefront({ isDemoMode, isEmbedMode }) {
 
         <Deadlines />
       </main>
+    </div>
+  );
+}
+
+function RegistrationNoticeDialog({ onAcknowledge }) {
+  const dialogRef = useRef(null);
+
+  useEffect(() => {
+    dialogRef.current?.focus();
+    const originalOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      document.body.style.overflow = originalOverflow;
+    };
+  }, []);
+
+  return (
+    <div className="registration-notice-overlay" role="presentation">
+      <section
+        className="registration-notice-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="registration-notice-title"
+        ref={dialogRef}
+        tabIndex={-1}
+      >
+        <p className="section-label">Before you continue</p>
+        <h2 id="registration-notice-title">Vendor and exhibitor purchases only</h2>
+        <p className="registration-notice-copy">
+          This site is for purchasing vendor, recruiting, and exhibition space. It is
+          {" "}<strong>not</strong>{" "}
+          for conference registration, which must be done separately.
+        </p>
+        <button type="button" className="checkout-button compact-button" onClick={onAcknowledge}>
+          OK
+        </button>
+      </section>
     </div>
   );
 }
@@ -1205,7 +1255,7 @@ function EmailVerificationPanel({
 
 function Deadlines() {
   const rows = [
-    ["August 1, 2026", "Early-bird booth pricing deadline"],
+    ["October 5, 2026", "Early-bird booth pricing deadline"],
     ["September 15, 2026", "Final booth sales close; sponsor logos and ad copy due"],
     ["October 1, 2026", "Exhibitor service kit distributed"],
     ["November 1, 2026", "Slide reel, signage, and program book sent to printer"],
@@ -1554,6 +1604,22 @@ function checkoutEmailVerificationPayload(emailVerification) {
   };
 }
 
+function readRegistrationNoticeAcknowledged() {
+  try {
+    return window.localStorage.getItem(registrationNoticeStorageKey) === "1";
+  } catch (error) {
+    return false;
+  }
+}
+
+function writeRegistrationNoticeAcknowledged() {
+  try {
+    window.localStorage.setItem(registrationNoticeStorageKey, "1");
+  } catch (error) {
+    // The notice still dismisses for this session if persistent storage is blocked.
+  }
+}
+
 function readStoredDemoInventory() {
   try {
     const rawValue = window.localStorage.getItem(demoInventoryStorageKey);
@@ -1792,7 +1858,7 @@ function createCommercialBoothChoice(boothPackages) {
   const regularPrice = regular ? formatCurrency(regular.price) : null;
   const priceNote =
     earlyPrice && regularPrice
-      ? `Early bird ${earlyPrice} through Aug 1; ${regularPrice} after Aug 1`
+      ? `Early bird ${earlyPrice} through Oct 5; ${regularPrice} after Oct 5`
       : fallback.label;
 
   return {
