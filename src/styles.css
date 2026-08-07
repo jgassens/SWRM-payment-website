@@ -92,6 +92,7 @@ button:disabled {
 }
 
 .app-shell {
+  position: relative;
   min-height: 100vh;
   background:
     linear-gradient(180deg, rgba(43, 98, 101, 0.08), transparent 420px),
@@ -561,14 +562,15 @@ h3 {
 }
 
 .registration-notice-overlay {
-  position: fixed;
+  position: absolute;
   inset: 0;
   z-index: 120;
   display: flex;
   align-items: flex-start;
   justify-content: center;
+  min-height: 100vh;
   overflow-y: auto;
-  padding: clamp(20px, 5vh, 64px) 20px 20px;
+  padding: 20px;
   background: rgba(17, 23, 23, 0.58);
 }
 
