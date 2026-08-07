@@ -69,6 +69,19 @@ export default function App() {
     document.documentElement.classList.toggle("embed-mode", isEmbedMode);
     document.body.classList.toggle("embed-mode", isEmbedMode);
 
+    if (isEmbedMode) {
+      try {
+        const hostFrame = window.frameElement;
+        if (hostFrame) {
+          hostFrame.setAttribute("frameborder", "0");
+          hostFrame.style.border = "0";
+          hostFrame.style.display = "block";
+        }
+      } catch (error) {
+        // Some site builders block iframe access; their embed snippet should also set border:0.
+      }
+    }
+
     return () => {
       document.documentElement.classList.remove("embed-mode");
       document.body.classList.remove("embed-mode");
