@@ -1856,10 +1856,13 @@ function createCommercialBoothChoice(boothPackages) {
   const fallback = early || regular;
   const earlyPrice = early ? formatCurrency(early.price) : null;
   const regularPrice = regular ? formatCurrency(regular.price) : null;
-  const priceNote =
-    earlyPrice && regularPrice
-      ? `Early bird ${earlyPrice} through Oct 5; ${regularPrice} after Oct 5`
-      : fallback.label;
+  let priceNote = fallback.label;
+  if (earlyIsCurrent && early?.label) {
+    priceNote = early.label;
+  }
+  if (earlyPrice && regularPrice && earlyPrice !== regularPrice) {
+    priceNote = `Early bird ${earlyPrice} through Oct 5; ${regularPrice} after Oct 5`;
+  }
 
   return {
     ...fallback,
