@@ -127,6 +127,8 @@ app.post("/api/create-checkout-session", async (req, res) => {
     const { cart, vendor } = req.body || {};
     const items = normalizeCart(cart);
     const cleanVendor = normalizeVendor(vendor);
+    const embedMode = isEmbedModeValue(req.body?.embedMode);
+    const embedQuery = embedMode ? "&embed=1" : "";
 
     if (items.length === 0) {
       return res.status(400).json({ error: "Select at least one sponsorship item." });
@@ -154,7 +156,7 @@ app.post("/api/create-checkout-session", async (req, res) => {
       const orderId = `mock_${Date.now().toString(36)}`;
       return res.json({
         mode: "mock",
-        url: `/?checkout=success&mock=1&order=${encodeURIComponent(orderId)}`
+        url: `/?checkout=success${embedQuery}&mock=1&order=${encodeURIComponent(orderId)}`
       });
     }
 
@@ -186,13 +188,14 @@ app.post("/api/create-checkout-session", async (req, res) => {
         website: cleanVendor.website || "",
         email_verification_id: emailVerification.id || "",
         email_verified_at: emailVerification.verifiedAt ? String(emailVerification.verifiedAt) : "",
+        embed_mode: embedMode ? "1" : "0",
         package_summary: items
           .map(({ item, quantity }) => `${quantity}x ${item.name}`)
           .join("; ")
           .slice(0, 500)
       },
-      success_url: `${origin}/?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${origin}/?checkout=cancel`
+      success_url: `${origin}/?checkout=success${embedQuery}&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${origin}/?checkout=cancel${embedQuery}`
     });
 
     return res.json({ mode: "checkout", url: session.url });
@@ -209,6 +212,8 @@ app.post("/api/create-demo-checkout-session", async (req, res) => {
     const { cart, vendor, demoOrderId } = req.body || {};
     const items = normalizeCart(cart);
     const cleanVendor = normalizeVendor(vendor);
+    const embedMode = isEmbedModeValue(req.body?.embedMode);
+    const embedQuery = embedMode ? "&embed=1" : "";
 
     if (items.length === 0) {
       return res.status(400).json({ error: "Select at least one sponsorship item." });
@@ -275,13 +280,14 @@ app.post("/api/create-demo-checkout-session", async (req, res) => {
         website: cleanVendor.website || "",
         email_verification_id: emailVerification.id || "",
         email_verified_at: emailVerification.verifiedAt ? String(emailVerification.verifiedAt) : "",
+        embed_mode: embedMode ? "1" : "0",
         package_summary: items
           .map(({ item, quantity }) => `${quantity}x ${item.name}`)
           .join("; ")
           .slice(0, 500)
       },
-      success_url: `${origin}/?checkout=success&demo=1&stripe_demo=1&demo_order=${encodedOrderId}&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${origin}/?checkout=cancel&demo=1&stripe_demo=1&demo_order=${encodedOrderId}`
+      success_url: `${origin}/?checkout=success&demo=1&stripe_demo=1${embedQuery}&demo_order=${encodedOrderId}&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${origin}/?checkout=cancel&demo=1&stripe_demo=1${embedQuery}&demo_order=${encodedOrderId}`
     });
 
     return res.json({ mode: "demo-checkout", url: session.url });
@@ -350,6 +356,10 @@ server.on("error", (error) => {
   console.error(error);
   process.exitCode = 1;
 });
+
+function isEmbedModeValue(value) {
+  return value === true || value === 1 || String(value || "").toLowerCase() === "true";
+}
 
 function apiSecurityHeaders() {
   return {

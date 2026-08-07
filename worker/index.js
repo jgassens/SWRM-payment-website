@@ -283,6 +283,7 @@ async function handleCheckout(request, env, origin) {
   const body = await request.json().catch(() => null);
   const items = await normalizeCart(body?.cart, env);
   const vendor = normalizeVendor(body?.vendor);
+  const embedMode = isEmbedModeValue(body?.embedMode);
 
   if (items.length === 0) {
     return jsonResponse(
@@ -324,7 +325,7 @@ async function handleCheckout(request, env, origin) {
   try {
     await reserveInventory(env, items);
     inventoryReserved = true;
-    const session = await createCheckoutSession(env, items, vendor, reservationId);
+    const session = await createCheckoutSession(env, items, vendor, reservationId, { embedMode });
 
     if (!session.url) {
       throw new Error("Stripe did not return a Checkout URL.");
@@ -389,10 +390,12 @@ async function handleDemoCheckout(request, env, origin) {
   }
 
   const emailVerification = await requireVerifiedEmail(env, vendor, body?.emailVerification);
+  const embedMode = isEmbedModeValue(body?.embedMode);
   const demoOrderId = clean(body?.demoOrderId, 120) || `demo_${crypto.randomUUID()}`;
   const session = await createCheckoutSession(env, items, vendor, demoOrderId, {
     mode: "demo",
-    stripeSecret: demoStripeSecret
+    stripeSecret: demoStripeSecret,
+    embedMode
   });
 
   if (!session.url) {
@@ -507,6 +510,7 @@ async function createCheckoutSession(env, items, vendor, reservationId, options 
   const frontendUrl = trimTrailingSlash(env.FRONTEND_URL);
   const stripeSecret = options.stripeSecret || env.STRIPE_SECRET_KEY;
   const isDemoCheckout = options.mode === "demo";
+  const embedQuery = options.embedMode ? "&embed=1" : "";
   const encodedReservationId = encodeURIComponent(reservationId);
   const form = new URLSearchParams();
 
@@ -521,17 +525,18 @@ async function createCheckoutSession(env, items, vendor, reservationId, options 
   form.set(
     "success_url",
     isDemoCheckout
-      ? `${frontendUrl}/?checkout=success&demo=1&stripe_demo=1&demo_order=${encodedReservationId}&session_id={CHECKOUT_SESSION_ID}`
-      : `${frontendUrl}/?checkout=success&session_id={CHECKOUT_SESSION_ID}`
+      ? `${frontendUrl}/?checkout=success&demo=1&stripe_demo=1${embedQuery}&demo_order=${encodedReservationId}&session_id={CHECKOUT_SESSION_ID}`
+      : `${frontendUrl}/?checkout=success${embedQuery}&session_id={CHECKOUT_SESSION_ID}`
   );
   form.set(
     "cancel_url",
     isDemoCheckout
-      ? `${frontendUrl}/?checkout=cancel&demo=1&stripe_demo=1&demo_order=${encodedReservationId}`
-      : `${frontendUrl}/?checkout=cancel`
+      ? `${frontendUrl}/?checkout=cancel&demo=1&stripe_demo=1${embedQuery}&demo_order=${encodedReservationId}`
+      : `${frontendUrl}/?checkout=cancel${embedQuery}`
   );
   form.set("metadata[reservation_id]", reservationId);
   form.set("metadata[checkout_mode]", isDemoCheckout ? "demo" : "live");
+  form.set("metadata[embed_mode]", options.embedMode ? "1" : "0");
   form.set("metadata[organization]", vendor.organization);
   form.set("metadata[contact_name]", vendor.contactName);
   form.set("metadata[phone]", vendor.phone || "");
@@ -1719,6 +1724,10 @@ function isPaidCheckoutSession(session) {
 
 function normalizeCheckoutMode(value) {
   return value === "demo" ? "demo" : "live";
+}
+
+function isEmbedModeValue(value) {
+  return value === true || value === 1 || String(value || "").toLowerCase() === "true";
 }
 
 function checkoutModeFromStripeSession(session) {

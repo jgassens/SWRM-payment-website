@@ -62,23 +62,62 @@ export default function App() {
   const params = new URLSearchParams(window.location.search);
   const checkoutResult = params.get("checkout");
   const isDemoMode = forceDemoMode || params.get("demo") === "1";
+  const isEmbedMode = detectEmbedMode(params);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("embed-mode", isEmbedMode);
+    document.body.classList.toggle("embed-mode", isEmbedMode);
+
+    return () => {
+      document.documentElement.classList.remove("embed-mode");
+      document.body.classList.remove("embed-mode");
+    };
+  }, [isEmbedMode]);
 
   if (currentRoute.endsWith("/admin") || params.get("admin") === "1") {
     return <AdminApp appBase={appBase} Header={ConferenceHeader} />;
   }
 
   if (checkoutResult === "success" || currentRoute.endsWith("/success")) {
-    return <CheckoutResult status="success" isDemoMode={isDemoMode} />;
+    return <CheckoutResult status="success" isDemoMode={isDemoMode} isEmbedMode={isEmbedMode} />;
   }
 
   if (checkoutResult === "cancel" || currentRoute.endsWith("/cancel")) {
-    return <CheckoutResult status="cancel" isDemoMode={isDemoMode} />;
+    return <CheckoutResult status="cancel" isDemoMode={isDemoMode} isEmbedMode={isEmbedMode} />;
   }
 
-  return <Storefront isDemoMode={isDemoMode} />;
+  return <Storefront isDemoMode={isDemoMode} isEmbedMode={isEmbedMode} />;
 }
 
-function Storefront({ isDemoMode }) {
+function detectEmbedMode(params) {
+  if (
+    isTruthyParam(params.get("embed")) ||
+    isTruthyParam(params.get("embedded")) ||
+    isTruthyParam(params.get("iframe"))
+  ) {
+    return true;
+  }
+
+  try {
+    return window.self !== window.top;
+  } catch {
+    return true;
+  }
+}
+
+function isTruthyParam(value) {
+  return ["1", "true", "yes"].includes(String(value || "").toLowerCase());
+}
+
+function storefrontHref({ demo = false, embed = false } = {}) {
+  const params = new URLSearchParams();
+  if (demo) params.set("demo", "1");
+  if (embed) params.set("embed", "1");
+  const query = params.toString();
+  return query ? appBase + "?" + query : appBase;
+}
+
+function Storefront({ isDemoMode, isEmbedMode }) {
   const [activeCategory, setActiveCategory] = useState("recommended");
   const [selectedBoothPath, setSelectedBoothPath] = useState(null);
   const [boothUpgradePrompt, setBoothUpgradePrompt] = useState({ open: false, boothId: null });
@@ -420,6 +459,7 @@ function Storefront({ isDemoMode }) {
             cart,
             vendor,
             demoOrderId: demoOrder.id,
+            embedMode: isEmbedMode,
             emailVerification: checkoutEmailVerificationPayload(emailVerification)
           })
         });
@@ -449,6 +489,7 @@ function Storefront({ isDemoMode }) {
         body: JSON.stringify({
           cart,
           vendor,
+          embedMode: isEmbedMode,
           emailVerification: checkoutEmailVerificationPayload(emailVerification)
         })
       });
@@ -463,7 +504,7 @@ function Storefront({ isDemoMode }) {
   }
 
   return (
-    <div className="app-shell">
+    <div className={"app-shell " + (isEmbedMode ? "embed-shell" : "")}>
       {boothUpgradePrompt.open ? (
         <BoothUpgradePrompt
           boothItem={catalogById.get(boothUpgradePrompt.boothId)}
@@ -472,9 +513,9 @@ function Storefront({ isDemoMode }) {
           onDecline={declineBoothUpgrade}
         />
       ) : null}
-      <ConferenceHeader cartCount={cartCount} isDemoMode={isDemoMode} />
+      {isEmbedMode ? null : <ConferenceHeader cartCount={cartCount} isDemoMode={isDemoMode} />}
       <main className="page">
-        <IntroBlock />
+        {isEmbedMode ? <EmbedIntroBlock /> : <IntroBlock />}
 
         <section className="commerce-grid" aria-label="SWRM sponsorship checkout">
           <div className="catalog-column">
@@ -614,6 +655,19 @@ function IntroBlock() {
         <Fact value="6" label="States served" />
         <Fact value="4" label="Days of programming" />
       </div>
+    </section>
+  );
+}
+
+function EmbedIntroBlock() {
+  return (
+    <section className="embed-intro-panel">
+      <p className="section-label">Exposition and Grad Fair</p>
+      <h1>Reserve booth and sponsorship space</h1>
+      <p>
+        Start with an exhibit or grad-fair footprint, then add optional sponsorship visibility
+        across the SWRM 2026 meeting.
+      </p>
     </section>
   );
 }
@@ -1178,7 +1232,7 @@ function Deadlines() {
   );
 }
 
-function CheckoutResult({ status, isDemoMode = false }) {
+function CheckoutResult({ status, isDemoMode = false, isEmbedMode = false }) {
   const params = new URLSearchParams(window.location.search);
   const isMock = params.get("mock") === "1";
   const isDemoCheckout = isDemoMode || isMock;
@@ -1249,8 +1303,8 @@ function CheckoutResult({ status, isDemoMode = false }) {
   }, [isSuccess, isDemoCheckout, stripeSessionId]);
 
   return (
-    <div className="app-shell result-shell">
-      <ConferenceHeader cartCount={0} isDemoMode={isDemoCheckout} />
+    <div className={"app-shell result-shell " + (isEmbedMode ? "embed-shell" : "")}>
+      {isEmbedMode ? null : <ConferenceHeader cartCount={0} isDemoMode={isDemoCheckout} />}
       <main className="page">
         <section className="intro-panel result-panel">
           <div className="accent-rule" aria-hidden="true" />
@@ -1328,7 +1382,7 @@ function CheckoutResult({ status, isDemoMode = false }) {
               </p>
             ) : null}
             <div className="result-actions">
-              <a className="outline-button result-link" href={isDemoCheckout ? `${appBase}?demo=1` : appBase}>
+              <a className="outline-button result-link" href={storefrontHref({ demo: isDemoCheckout, embed: isEmbedMode })}>
                 {isDemoCheckout ? "Back to demo portal" : "Back to portal"}
               </a>
             </div>

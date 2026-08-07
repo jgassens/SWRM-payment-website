@@ -56,6 +56,11 @@ body {
   line-height: 1.5;
 }
 
+html.embed-mode,
+body.embed-mode {
+  background: transparent;
+}
+
 button,
 input,
 select,
@@ -147,6 +152,16 @@ button:disabled {
   padding: 42px 0 72px;
 }
 
+.embed-shell {
+  min-height: auto;
+  background: transparent;
+}
+
+.embed-shell .page {
+  width: min(100%, 1180px);
+  padding: 0 0 36px;
+}
+
 .intro-panel {
   display: grid;
   grid-template-columns: 6px minmax(0, 1fr) auto;
@@ -156,6 +171,26 @@ button:disabled {
   margin-bottom: 32px;
   background: var(--panel);
   box-shadow: var(--shadow);
+}
+
+.embed-intro-panel {
+  margin: 0 0 22px;
+  padding: 0 0 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.embed-intro-panel h1 {
+  max-width: 820px;
+  margin-bottom: 10px;
+  font-size: clamp(28px, 3vw, 42px);
+  line-height: 1.08;
+}
+
+.embed-intro-panel p:last-child {
+  max-width: 760px;
+  margin-bottom: 0;
+  color: var(--muted);
+  font-size: 17px;
 }
 
 .accent-rule {
@@ -325,6 +360,18 @@ h3 {
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--panel);
+}
+
+.embed-shell .booth-step,
+.embed-shell .addon-menu,
+.embed-shell .cart-panel,
+.embed-shell .deadlines,
+.embed-shell .result-panel {
+  box-shadow: none;
+}
+
+.embed-shell .cart-panel {
+  top: 0;
 }
 
 .booth-step {
