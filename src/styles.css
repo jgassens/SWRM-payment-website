@@ -565,9 +565,10 @@ h3 {
   inset: 0;
   z-index: 120;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
-  padding: 20px;
+  overflow-y: auto;
+  padding: clamp(20px, 5vh, 64px) 20px 20px;
   background: rgba(17, 23, 23, 0.58);
 }
 
