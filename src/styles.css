@@ -155,9 +155,10 @@ button:disabled {
 
 .embed-shell {
   min-height: auto;
+  padding: clamp(12px, 2vw, 24px);
   border: 0;
   outline: 0;
-  background: transparent;
+  background: var(--panel);
 }
 
 .embed-shell .page {
