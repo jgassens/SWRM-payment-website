@@ -13,6 +13,10 @@ import { categories, formatCurrency, packages as fallbackPackages, withInventory
 
 const appBase = import.meta.env.BASE_URL || "/";
 const logoUrl = `${appBase}assets/swrm-logo.webp`;
+// The swrm.org page that hosts the embedded storefront; checkout returns land on this
+// app top-level, so the result page offers a way back to the conference site.
+const embedHostPageUrl =
+  import.meta.env.VITE_EMBED_HOST_PAGE_URL || "https://swrm.org/exposition-%26-grad-fair-1";
 const noBoothChoiceId = "no-booth";
 const boothAddonIds = new Set(["booth-premium-corner"]);
 const commercialBoothChoiceId = "booth-commercial";
@@ -129,6 +133,49 @@ function storefrontHref({ demo = false, embed = false } = {}) {
   if (embed) params.set("embed", "1");
   const query = params.toString();
   return query ? appBase + "?" + query : appBase;
+}
+
+// Stripe Checkout refuses to initialize inside an iframe (it renders its loading
+// skeleton forever), so the embedded storefront has to hand the whole tab to Stripe
+// instead of navigating its own frame.
+function openStripeCheckout(url) {
+  let framed = false;
+  try {
+    framed = window.self !== window.top;
+  } catch {
+    framed = true;
+  }
+
+  if (!framed) {
+    window.location.href = url;
+    return "navigated";
+  }
+
+  try {
+    window.top.location.href = url;
+    return "navigated";
+  } catch {
+    // The host page's iframe sandbox blocks top navigation; fall back to a new tab.
+  }
+
+  return window.open(url, "_blank") ? "popup" : "blocked";
+}
+
+const checkoutPopupBlockedMessage =
+  "The browser blocked the redirect to Stripe. Use the secure checkout button below to continue.";
+
+function checkoutOpenedState(outcome, url) {
+  if (outcome === "blocked") {
+    return { status: "manual", message: checkoutPopupBlockedMessage, url };
+  }
+  if (outcome === "popup") {
+    return {
+      status: "idle",
+      message: "Secure Stripe checkout opened in a new tab. Finish payment there."
+    };
+  }
+  // "navigated": this frame is being replaced, so the stuck-loading state is never seen.
+  return { status: "loading", message: "" };
 }
 
 function Storefront({ isDemoMode, isEmbedMode }) {
@@ -491,7 +538,7 @@ function Storefront({ isDemoMode, isEmbedMode }) {
           throw new Error("Stripe did not return a demo Checkout URL.");
         }
 
-        window.location.href = data.url;
+        setCheckoutState(checkoutOpenedState(openStripeCheckout(data.url), data.url));
       } catch (error) {
         clearPendingDemoOrder();
         setCheckoutState({
@@ -516,7 +563,12 @@ function Storefront({ isDemoMode, isEmbedMode }) {
         })
       });
       const data = await readJson(response);
-      window.location.href = data.url;
+
+      if (!data.url) {
+        throw new Error("Stripe did not return a Checkout URL.");
+      }
+
+      setCheckoutState(checkoutOpenedState(openStripeCheckout(data.url), data.url));
     } catch (error) {
       setCheckoutState({
         status: "error",
@@ -1179,6 +1231,17 @@ function CartPanel({
             : "Proceed to checkout"}
       </button>
 
+      {checkoutState.status === "manual" && checkoutState.url ? (
+        <a
+          className="checkout-button manual-checkout-link"
+          href={checkoutState.url}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          Open secure checkout
+        </a>
+      ) : null}
+
       {checkoutState.message ? (
         <p className={checkoutState.status === "error" ? "checkout-error" : "checkout-note"}>
           {checkoutState.message}
@@ -1445,9 +1508,15 @@ function CheckoutResult({ status, isDemoMode = false, isEmbedMode = false }) {
               </p>
             ) : null}
             <div className="result-actions">
-              <a className="outline-button result-link" href={storefrontHref({ demo: isDemoCheckout, embed: isEmbedMode })}>
-                {isDemoCheckout ? "Back to demo portal" : "Back to portal"}
-              </a>
+              {isEmbedMode ? (
+                <a className="outline-button result-link" href={embedHostPageUrl}>
+                  Back to the SWRM 2026 exposition page
+                </a>
+              ) : (
+                <a className="outline-button result-link" href={storefrontHref({ demo: isDemoCheckout, embed: isEmbedMode })}>
+                  {isDemoCheckout ? "Back to demo portal" : "Back to portal"}
+                </a>
+              )}
             </div>
           </div>
         </section>

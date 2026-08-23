@@ -1102,6 +1102,18 @@ textarea:focus {
   background: var(--teal);
 }
 
+.manual-checkout-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}
+
+.manual-checkout-link:hover,
+.manual-checkout-link:focus-visible {
+  background: var(--teal);
+}
+
 .checkout-error,
 .checkout-note {
   margin: 12px 0 0;
