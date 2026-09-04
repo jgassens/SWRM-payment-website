@@ -437,7 +437,7 @@ function Storefront({ isDemoMode, isEmbedMode }) {
         token: "",
         message: data.debugCode
           ? `Local test code: ${data.debugCode}`
-          : `Verification code sent to ${data.email || email}. If you do not see it within a minute, check your spam or junk folder.`
+          : `Verification code sent to ${data.email || email}. If you do not see it within a minute, check your spam or junk folder for a message from "SWRM 2026 Registration".`
       });
     } catch (error) {
       setEmailVerification({

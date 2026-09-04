@@ -10,6 +10,15 @@ const validCategoryIds = new Set(categories.map((category) => category.id));
 const requiredVendorMessage = "Organization, contact name, email, phone, and website are required before checkout.";
 const emailVerificationRequiredMessage = "Verify the vendor email address before checkout.";
 const defaultEmailFrom = "noreplySWRM2026@jeremiahsrandom.website";
+// Shown as the sender name and inside the verification email. University mail filters treat a
+// bare address with a bare six-digit code as phishing, so the message names the meeting, says
+// why it arrived, and points at a real page. EMAIL_REPLY_TO is intentionally empty by default:
+// a contact address that bounces is worse than none, so it only appears once it is set.
+const defaultEmailFromName = "SWRM 2026 Registration";
+const defaultEventSiteUrl = "https://swrm.org";
+const eventFullName = "American Chemical Society Southwest Regional Meeting";
+const eventShortName = "SWRM 2026";
+const eventDates = "November 17-19, 2026";
 const emailVerificationCodeExpirySeconds = 15 * 60;
 const emailVerificationTokenExpirySeconds = 2 * 60 * 60;
 const maxEmailVerificationAttempts = 5;
@@ -952,23 +961,177 @@ async function requireVerifiedEmail(env, vendor, payload) {
 }
 
 async function sendVerificationEmail(env, email, code) {
-  const from = clean(env.EMAIL_FROM, 320) || defaultEmailFrom;
-  const subject = "SWRM 2026 sponsorship email verification code";
-  const text = [
-    `Your SWRM 2026 sponsorship checkout verification code is ${code}.`,
-    "",
-    "Enter this code on the sponsorship checkout page to continue to Stripe.",
-    "The code expires in 15 minutes.",
-    "",
-    "If you did not request this code, you can ignore this email."
-  ].join("\n");
+  const fromAddress = clean(env.EMAIL_FROM, 320) || defaultEmailFrom;
+  const fromName = clean(env.EMAIL_FROM_NAME, 120) || defaultEmailFromName;
+  const replyTo = clean(env.EMAIL_REPLY_TO, 320);
+  const siteUrl = clean(env.EVENT_SITE_URL, 500) || defaultEventSiteUrl;
+  const subject = `${eventShortName} registration verification code: ${code}`;
+  const text = verificationEmailText({ code, siteUrl, replyTo });
+  const html = verificationEmailHtml({ code, siteUrl, replyTo });
 
-  return await env.EMAIL.send({
-    to: email,
-    from,
-    subject,
-    text
-  });
+  // The send binding is the one part of checkout that cannot be exercised outside production,
+  // and a field it rejects would block every registration. So the full message is tried first
+  // and steps down to the bare shape production has already delivered with: a plain code email
+  // still beats no code email. A degraded send is logged so the cause stays visible.
+  const attempts = [
+    {
+      variant: "full",
+      message: {
+        to: email,
+        from: `${quotedDisplayName(fromName)} <${fromAddress}>`,
+        subject,
+        text,
+        html,
+        ...(replyTo ? { replyTo } : {})
+      }
+    },
+    {
+      variant: "no_display_name",
+      message: { to: email, from: fromAddress, subject, text, html }
+    },
+    {
+      variant: "text_only",
+      message: { to: email, from: fromAddress, subject, text }
+    }
+  ];
+
+  let lastError = null;
+  for (const attempt of attempts) {
+    try {
+      const result = await env.EMAIL.send(attempt.message);
+      if (attempt.variant !== "full") {
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            message: "email_verification_send_degraded",
+            variant: attempt.variant,
+            reason: describeEmailSendError(lastError).message
+          })
+        );
+      }
+      return result;
+    } catch (error) {
+      lastError = error;
+      // Account- and domain-level refusals are not about the shape of the message, so a
+      // reduced retry cannot help and would only burn another send against the limit.
+      if (isFatalEmailSendError(error)) break;
+    }
+  }
+
+  throw lastError || new Error("Email send failed.");
+}
+
+function isFatalEmailSendError(error) {
+  const code = describeEmailSendError(error).code;
+  return (
+    code === "E_RATE_LIMIT_EXCEEDED" ||
+    code === "E_DAILY_LIMIT_EXCEEDED" ||
+    code === "E_SENDER_NOT_VERIFIED" ||
+    code === "E_SENDER_DOMAIN_NOT_AVAILABLE"
+  );
+}
+
+// Quoted so punctuation in the name cannot end the address, with CR/LF and quotes stripped so
+// a configured name can never inject extra headers.
+function quotedDisplayName(name) {
+  return `"${String(name || "").replace(/[\r\n"\\]/g, " ").trim()}"`;
+}
+
+function escapeHtml(value) {
+  return String(value === null || value === undefined ? "" : value).replace(
+    /[&<>"']/g,
+    (character) =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+      })[character]
+  );
+}
+
+function verificationEmailText({ code, siteUrl, replyTo }) {
+  const lines = [
+    `${eventFullName} (${eventShortName})`,
+    `Exhibitor and sponsor registration - ${eventDates}`,
+    "",
+    "Hello,",
+    "",
+    `This address was entered to reserve booth space or a sponsorship for ${eventShortName}.`,
+    "Enter this code on the registration page to confirm the address is yours:",
+    "",
+    `    ${code}`,
+    "",
+    "The code expires in 15 minutes. If it expires, request a new one on the registration",
+    "page and a fresh code will be sent.",
+    "",
+    `If you did not start a ${eventShortName} registration, no action is needed. Nothing has`,
+    "been reserved and nothing has been charged.",
+    "",
+    `Conference website: ${siteUrl}`
+  ];
+
+  if (replyTo) {
+    lines.push(`Questions about registration: ${replyTo}`);
+  }
+
+  lines.push(
+    "",
+    `This message was sent by the ${eventShortName} registration system. Payment is handled by`,
+    "Stripe on a secure checkout page. We will never ask you by email for a password, or for",
+    "card or bank details."
+  );
+
+  return lines.join("\n");
+}
+
+// Deliberately image-free and self-contained: a remote logo that a mail client blocks reads as
+// more suspicious than no logo at all, and blocked images are what most filters strip first.
+function verificationEmailHtml({ code, siteUrl, replyTo }) {
+  const safeSite = escapeHtml(siteUrl);
+  const bodyFont =
+    "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
+  const questionsLine = replyTo
+    ? `<p style="margin:0 0 6px;font-size:14px;color:#44506a;">Questions about registration: <a href="mailto:${escapeHtml(
+        replyTo
+      )}" style="color:#1f4b99;">${escapeHtml(replyTo)}</a></p>`
+    : "";
+
+  return `<div style="margin:0;padding:24px 12px;background:#f4f6fa;font-family:${bodyFont};">
+  <div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #dfe4ee;border-radius:10px;overflow:hidden;">
+    <div style="padding:20px 28px;background:#0f2a5c;">
+      <p style="margin:0;font-size:15px;font-weight:700;color:#ffffff;">${escapeHtml(
+        eventShortName
+      )} Exhibitor and Sponsor Registration</p>
+      <p style="margin:6px 0 0;font-size:13px;color:#c3d1ea;">${escapeHtml(
+        eventFullName
+      )} &middot; ${escapeHtml(eventDates)}</p>
+    </div>
+    <div style="padding:28px;">
+      <p style="margin:0 0 16px;font-size:15px;color:#1d2433;">Hello,</p>
+      <p style="margin:0 0 20px;font-size:15px;line-height:1.5;color:#1d2433;">This address was entered to reserve booth space or a sponsorship for ${escapeHtml(
+        eventShortName
+      )}. Enter this code on the registration page to confirm the address is yours:</p>
+      <div style="margin:0 0 20px;padding:18px;text-align:center;background:#f4f6fa;border:1px solid #dfe4ee;border-radius:8px;">
+        <span style="font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;font-size:30px;font-weight:700;letter-spacing:7px;color:#0f2a5c;">${escapeHtml(
+          code
+        )}</span>
+      </div>
+      <p style="margin:0 0 20px;font-size:14px;line-height:1.5;color:#44506a;">The code expires in 15 minutes. If it expires, request a new one on the registration page and a fresh code will be sent.</p>
+      <p style="margin:0 0 20px;font-size:14px;line-height:1.5;color:#44506a;">If you did not start a ${escapeHtml(
+        eventShortName
+      )} registration, no action is needed. Nothing has been reserved and nothing has been charged.</p>
+      <div style="margin:0 0 20px;padding-top:18px;border-top:1px solid #e7ebf3;">
+        <p style="margin:0 0 6px;font-size:14px;color:#44506a;">Conference website: <a href="${safeSite}" style="color:#1f4b99;">${safeSite}</a></p>
+        ${questionsLine}
+      </div>
+      <p style="margin:0;font-size:12px;line-height:1.5;color:#6b7385;">This message was sent by the ${escapeHtml(
+        eventShortName
+      )} registration system. Payment is handled by Stripe on a secure checkout page. We will never ask you by email for a password, or for card or bank details.</p>
+    </div>
+  </div>
+</div>`;
 }
 
 function describeEmailSendError(error) {
