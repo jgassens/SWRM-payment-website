@@ -9,7 +9,10 @@ const defaultAllowedOrigins = [
 const validCategoryIds = new Set(categories.map((category) => category.id));
 const requiredVendorMessage = "Organization, contact name, email, phone, and website are required before checkout.";
 const emailVerificationRequiredMessage = "Verify the vendor email address before checkout.";
+// Cloudflare Email Service can only send from this address (its domain is on Cloudflare DNS).
+// It is the fallback when RESEND_API_KEY is not set; see sendVerificationEmail().
 const defaultEmailFrom = "noreplySWRM2026@jeremiahsrandom.website";
+const resendEndpoint = "https://api.resend.com/emails";
 const emailVerificationCodeExpirySeconds = 15 * 60;
 const emailVerificationTokenExpirySeconds = 2 * 60 * 60;
 const maxEmailVerificationAttempts = 5;
@@ -785,7 +788,7 @@ async function createEmailVerification(env, rawEmail, rawCheckoutMode) {
     throw new HttpError("Email verification storage is not configured.", 503);
   }
 
-  if (!env.EMAIL?.send) {
+  if (!emailSendingConfigured(env)) {
     throw new HttpError("Email sending is not configured on this Worker.", 503);
   }
 
@@ -951,8 +954,11 @@ async function requireVerifiedEmail(env, vendor, payload) {
   return { id: row.id, verifiedAt: Number(row.verified_at || now) };
 }
 
+function emailSendingConfigured(env) {
+  return Boolean(clean(env.RESEND_API_KEY, 200)) || Boolean(env.EMAIL?.send);
+}
+
 async function sendVerificationEmail(env, email, code) {
-  const from = clean(env.EMAIL_FROM, 320) || defaultEmailFrom;
   const subject = "SWRM 2026 sponsorship email verification code";
   const text = [
     `Your SWRM 2026 sponsorship checkout verification code is ${code}.`,
@@ -960,34 +966,97 @@ async function sendVerificationEmail(env, email, code) {
     "Enter this code on the sponsorship checkout page to continue to Stripe.",
     "The code expires in 15 minutes.",
     "",
-    "If you did not request this code, you can ignore this email."
+    "If you did not request this code, you can ignore this email.",
+    "",
+    "SWRM 2026 - Southwest Regional Meeting of the American Chemical Society",
+    "https://swrm.org"
   ].join("\n");
+
+  // Preferred path: Resend, sending from a domain whose DNS we control (EMAIL_FROM).
+  // Fallback: the Cloudflare Email Service binding, which can only send from the
+  // address verified on Cloudflare (EMAIL_FALLBACK_FROM / defaultEmailFrom).
+  if (clean(env.RESEND_API_KEY, 200)) {
+    return await sendViaResend(env, {
+      to: email,
+      from: clean(env.EMAIL_FROM, 320) || defaultEmailFrom,
+      replyTo: clean(env.EMAIL_REPLY_TO, 320),
+      subject,
+      text
+    });
+  }
 
   return await env.EMAIL.send({
     to: email,
-    from,
+    from: clean(env.EMAIL_FALLBACK_FROM, 320) || defaultEmailFrom,
     subject,
     text
   });
+}
+
+async function sendViaResend(env, { to, from, replyTo, subject, text }) {
+  const body = { from, to: [to], subject, text };
+  if (replyTo) body.reply_to = replyTo;
+
+  const response = await fetch(resendEndpoint, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.RESEND_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+
+  let payload = {};
+  try {
+    payload = await response.json();
+  } catch (error) {
+    payload = {};
+  }
+
+  if (!response.ok) {
+    const error = new Error(
+      clean(payload?.message, 500) || `Resend responded with HTTP ${response.status}`
+    );
+    error.code = clean(payload?.name, 120) || `RESEND_HTTP_${response.status}`;
+    error.status = response.status;
+    throw error;
+  }
+
+  return { messageId: clean(payload?.id, 200) };
 }
 
 function describeEmailSendError(error) {
   const candidate = error && typeof error === "object" ? error : {};
   return {
     code: clean(candidate.code || candidate.name || "EMAIL_SEND_FAILED", 120),
+    status: Number(candidate.status || 0),
     message: clean(candidate.message || String(error || "Email send failed."), 1000)
   };
 }
 
 function publicEmailSendMessage(error) {
+  const code = String(error.code || "").toLowerCase();
+
+  // Cloudflare binding codes are E_*; Resend reports a `name` plus an HTTP status.
   if (
-    error.code === "E_SENDER_NOT_VERIFIED" ||
-    error.code === "E_SENDER_DOMAIN_NOT_AVAILABLE"
+    code === "e_sender_not_verified" ||
+    code === "e_sender_domain_not_available" ||
+    code === "missing_api_key" ||
+    code === "invalid_api_key" ||
+    code === "restricted_api_key" ||
+    error.status === 401 ||
+    error.status === 403
   ) {
     return "Verification email is not fully configured for this sender domain yet.";
   }
 
-  if (error.code === "E_RATE_LIMIT_EXCEEDED" || error.code === "E_DAILY_LIMIT_EXCEEDED") {
+  if (
+    code === "e_rate_limit_exceeded" ||
+    code === "e_daily_limit_exceeded" ||
+    code === "rate_limit_exceeded" ||
+    code === "daily_quota_exceeded" ||
+    error.status === 429
+  ) {
     return "Verification email sending is temporarily rate limited. Please try again later.";
   }
 

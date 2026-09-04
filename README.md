@@ -27,12 +27,17 @@ pnpm worker:deploy
 pnpm exec wrangler secret put STRIPE_SECRET_KEY
 pnpm exec wrangler secret put ADMIN_PASSWORD
 pnpm exec wrangler secret put STRIPE_WEBHOOK_SECRET        # live-mode webhook signing secret
+pnpm exec wrangler secret put RESEND_API_KEY               # verification-code emails (see below)
 # Optional, only if you also run demo/test checkout and point a test webhook at the Worker:
 pnpm exec wrangler secret put STRIPE_DEMO_SECRET_KEY       # test-mode Stripe key (sk_test_...)
 pnpm exec wrangler secret put STRIPE_DEMO_WEBHOOK_SECRET   # test-mode webhook signing secret
 ```
 
 The webhook handler accepts either signing secret, so live payments work with only `STRIPE_WEBHOOK_SECRET` set; add `STRIPE_DEMO_WEBHOOK_SECRET` only if a test-mode webhook also targets the Worker.
+
+## Verification-code email
+
+Vendors must verify their email before checkout. The Worker sends the code through [Resend](https://resend.com) as `EMAIL_FROM` (a gassensmithlab.com address; that domain is verified in Resend with DKIM and return-path records in GoDaddy DNS). `EMAIL_REPLY_TO` is optional. If `RESEND_API_KEY` is not set, the Worker falls back to the Cloudflare Email Service binding, which can only send from `EMAIL_FALLBACK_FROM` on jeremiahsrandom.website; Microsoft 365 mailboxes junk that sender, which is why Resend is preferred.
 
 Mutable package prices and inventory live in Cloudflare D1. Apply schema migrations with:
 
