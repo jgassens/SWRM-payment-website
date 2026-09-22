@@ -829,9 +829,6 @@ function BoothPathStep({
           <p className="section-label">Step 1: booth path</p>
           <h2>Start with your exhibit footprint</h2>
         </div>
-        <p className="deadline-note">
-          Booth sales and logo materials are due September 15, 2026.
-        </p>
       </div>
 
       <div className="booth-options-grid">
@@ -1332,10 +1329,9 @@ function EmailVerificationPanel({
 function Deadlines() {
   const rows = [
     ["October 5, 2026", "Early-bird booth pricing deadline"],
-    ["September 15, 2026", "Final booth sales close; sponsor logos and ad copy due"],
     ["October 1, 2026", "Exhibitor service kit distributed"],
     ["November 1, 2026", "Slide reel, signage, and program book sent to printer"],
-    ["November 17-19, 2026", "SWRM 2026 show dates"]
+    ["November 16-19, 2026", "SWRM 2026 show dates"]
   ];
 
   return (
