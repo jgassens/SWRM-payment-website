@@ -117,7 +117,7 @@ export const packages = [
     name: "Standard commercial booth",
     label: "after Oct 5",
     price: 1700,
-    availability: "available until Sep 15",
+    availability: "available",
     summary: "Commercial exhibit booth after the early-bird deadline.",
     included: ["Standard booth package", "Two exhibitor registrations"]
   },
