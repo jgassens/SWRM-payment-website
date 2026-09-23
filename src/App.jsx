@@ -829,6 +829,9 @@ function BoothPathStep({
           <p className="section-label">Step 1: booth path</p>
           <h2>Start with your exhibit footprint</h2>
         </div>
+        <p className="deadline-note">
+          Early-bird pricing ends October 5, 2026. Booth sales close October 31, 2026.
+        </p>
       </div>
 
       <div className="booth-options-grid">
@@ -1330,6 +1333,7 @@ function Deadlines() {
   const rows = [
     ["October 5, 2026", "Early-bird booth pricing deadline"],
     ["October 1, 2026", "Exhibitor service kit distributed"],
+    ["October 31, 2026", "Final booth sales close"],
     ["November 1, 2026", "Slide reel, signage, and program book sent to printer"],
     ["November 16-19, 2026", "SWRM 2026 show dates"]
   ];
