@@ -54,7 +54,7 @@ const registrationNoticeStorageKey = "swrm-registration-notice-ack-v1";
 // opt into the test flow with ?demo=1. Set VITE_FORCE_DEMO_MODE=true only to force the whole
 // storefront into demo mode (e.g. a staging deploy that must never take real payments).
 const forceDemoMode = String(import.meta.env.VITE_FORCE_DEMO_MODE ?? "").toLowerCase() === "true";
-const requiredVendorFields = ["organization", "contactName", "email", "phone", "website"];
+const requiredVendorFields = ["organization", "contactName", "email", "phone"];
 const initialEmailVerification = {
   status: "idle",
   email: "",
@@ -1181,14 +1181,13 @@ function CartPanel({
           onRequest={onEmailVerificationRequest}
         />
         <label className="span-all">
-          Website <span className="required-marker" aria-hidden="true">*</span>
+          Website (optional)
           <input
             value={vendor.website}
             onChange={(event) => onVendorChange("website", event.target.value)}
             autoComplete="url"
             inputMode="url"
             placeholder="https://"
-            required
           />
         </label>
         <label className="span-all">
@@ -1196,10 +1195,18 @@ function CartPanel({
           <textarea
             value={vendor.notes}
             onChange={(event) => onVendorChange("notes", event.target.value)}
-            placeholder="Optional: logo contact, PO notes, ad file timing, or sponsorship details"
+            placeholder="Optional: PO notes, ad file timing, or sponsorship details"
             maxLength={500}
           />
         </label>
+        <p className="checkout-note span-all">
+          Please email your logo (vector SVG/EPS/PDF preferred, or a high-resolution PNG) to Jonathan
+          Dannatt at{" "}
+          <a href="mailto:jdannatt@udallas.edu?subject=SWRM%202026%20sponsor%20logo">
+            jdannatt@udallas.edu
+          </a>
+          .
+        </p>
       </div>
 
       <div className="booth-summary">
@@ -1490,13 +1497,25 @@ function CheckoutResult({ status, isDemoMode = false, isEmbedMode = false }) {
                   : "Thank you for supporting SWRM 2026."
                 : "Your cart is still open."}
             </h1>
-            <p>
-              {isSuccess
-                ? isDemoCheckout
+            {isSuccess && !isDemoCheckout ? (
+              <>
+                <p>Stripe has confirmed the checkout session. The SWRM team can follow up with logo, ad, and booth details.</p>
+                <p className="checkout-note">
+                  Please email your logo (vector SVG/EPS/PDF preferred, or a high-resolution PNG) to Jonathan
+                  Dannatt at{" "}
+                  <a href="mailto:jdannatt@udallas.edu?subject=SWRM%202026%20sponsor%20logo">
+                    jdannatt@udallas.edu
+                  </a>
+                  .
+                </p>
+              </>
+            ) : (
+              <p>
+                {isSuccess
                   ? "Stripe test checkout completed. Real SWRM inventory was not changed; this browser's demo inventory and vendor registration sandbox were updated so you can verify the full purchase path."
-                  : "Stripe has confirmed the checkout session. The SWRM team can follow up with logo, ad, and booth details."
-                : "No payment was completed. Return to the portal when you are ready to continue."}
-            </p>
+                  : "No payment was completed. Return to the portal when you are ready to continue."}
+              </p>
+            )}
             {isSuccess && isDemoCheckout && demoOrder ? (
               <div className="demo-confirmation-grid">
                 <div className="demo-receipt" aria-label="Demo order summary">

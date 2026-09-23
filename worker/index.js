@@ -7,7 +7,7 @@ const defaultAllowedOrigins = [
   "https://jgassens.github.io"
 ];
 const validCategoryIds = new Set(categories.map((category) => category.id));
-const requiredVendorMessage = "Organization, contact name, email, phone, and website are required before checkout.";
+const requiredVendorMessage = "Organization, contact name, email, and phone are required before checkout.";
 const emailVerificationRequiredMessage = "Verify the vendor email address before checkout.";
 // Cloudflare Email Service can only send from this address (its domain is on Cloudflare DNS).
 // It is the fallback when RESEND_API_KEY is not set; see sendVerificationEmail().
@@ -1768,7 +1768,7 @@ function normalizeVendor(vendor = {}) {
 }
 
 function hasRequiredVendorFields(vendor) {
-  return Boolean(vendor.organization && vendor.contactName && vendor.email && vendor.phone && vendor.website);
+  return Boolean(vendor.organization && vendor.contactName && vendor.email && vendor.phone);
 }
 
 function parseObject(value) {

@@ -32,7 +32,7 @@ const demoStripe = isStripeTestSecret(demoStripeSecret)
   ? new Stripe(demoStripeSecret, { apiVersion: "2026-02-25.clover" })
   : null;
 const cryptoApi = globalThis.crypto || nodeCrypto;
-const requiredVendorMessage = "Organization, contact name, email, phone, and website are required before checkout.";
+const requiredVendorMessage = "Organization, contact name, email, and phone are required before checkout.";
 const emailVerificationRequiredMessage = "Verify the vendor email address before checkout.";
 const emailVerificationCodeExpirySeconds = 15 * 60;
 const emailVerificationTokenExpirySeconds = 2 * 60 * 60;
@@ -530,7 +530,7 @@ function normalizeVendor(vendor = {}) {
 }
 
 function hasRequiredVendorFields(vendor) {
-  return Boolean(vendor.organization && vendor.contactName && vendor.email && vendor.phone && vendor.website);
+  return Boolean(vendor.organization && vendor.contactName && vendor.email && vendor.phone);
 }
 
 function normalizeEmail(value) {
