@@ -24,6 +24,8 @@ const commercialBoothEarlyId = "booth-standard-early";
 const commercialBoothRegularId = "booth-standard";
 const commercialBoothIds = new Set([commercialBoothEarlyId, commercialBoothRegularId]);
 const commercialEarlyBirdEndsAt = new Date(2026, 9, 6).getTime();
+// Midnight ending Oct 31, so Oct 31 itself is still a full selling day.
+const boothSalesEndAt = new Date(2026, 10, 1).getTime();
 const menuCategoryIds = ["tiers", "programming", "digital", "meals", "branded", "student"];
 const recommendedPackageIds = [
   "meals-coffee-break",
@@ -291,6 +293,7 @@ function Storefront({ isDemoMode, isEmbedMode }) {
   const emailVerified = isEmailVerifiedForVendor(vendor.email, emailVerification);
   const total = cartLines.reduce((sum, line) => sum + line.item.price * line.quantity, 0);
   const cartCount = cartLines.reduce((sum, line) => sum + line.quantity, 0);
+  const salesClosed = Date.now() >= boothSalesEndAt;
 
   function addToCart(itemId, options = {}) {
     const item = catalogById.get(itemId);
@@ -579,10 +582,11 @@ function Storefront({ isDemoMode, isEmbedMode }) {
 
   return (
     <div className={"app-shell " + (isEmbedMode ? "embed-shell" : "")}>
-      {showRegistrationNotice ? (
+      {salesClosed ? <SalesClosedDialog /> : null}
+      {showRegistrationNotice && !salesClosed ? (
         <RegistrationNoticeDialog onAcknowledge={acknowledgeRegistrationNotice} />
       ) : null}
-      {boothUpgradePrompt.open ? (
+      {boothUpgradePrompt.open && !salesClosed ? (
         <BoothUpgradePrompt
           boothItem={catalogById.get(boothUpgradePrompt.boothId)}
           addonPackages={boothAddonPackages.filter((item) => !isSoldOut(item))}
@@ -591,7 +595,7 @@ function Storefront({ isDemoMode, isEmbedMode }) {
         />
       ) : null}
       {isEmbedMode ? null : <ConferenceHeader cartCount={cartCount} isDemoMode={isDemoMode} />}
-      <main className="page">
+      <main className="page" inert={salesClosed}>
         {isEmbedMode ? <EmbedIntroBlock /> : <IntroBlock />}
 
         <section className="commerce-grid" aria-label="SWRM sponsorship checkout">
@@ -724,6 +728,40 @@ function RegistrationNoticeDialog({ onAcknowledge }) {
   );
 }
 
+function SalesClosedDialog() {
+  const dialogRef = useRef(null);
+
+  useEffect(() => {
+    dialogRef.current?.focus();
+    const originalOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      document.body.style.overflow = originalOverflow;
+    };
+  }, []);
+
+  return (
+    <div className="registration-notice-overlay" role="presentation">
+      <section
+        className="registration-notice-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="sales-closed-title"
+        ref={dialogRef}
+        tabIndex={-1}
+      >
+        <p className="section-label">SWRM 2026</p>
+        <h2 id="sales-closed-title">Sales have ended. Enjoy the Conference</h2>
+        <p className="registration-notice-copy">
+          Booth and sponsorship sales closed on October 31, 2026. We look forward to
+          seeing you at the Hilton Fort Worth, November 16-19.
+        </p>
+      </section>
+    </div>
+  );
+}
+
 function ConferenceHeader({ cartCount, admin = false, isDemoMode = false }) {
   const packageHref = isDemoMode ? `${appBase}?demo=1#packages` : "#packages";
   const checkoutHref = isDemoMode ? `${appBase}?demo=1#checkout` : "#checkout";
@@ -819,6 +857,7 @@ function BoothPathStep({
     ]
   };
   const commercialBoothChoice = createCommercialBoothChoice(boothPackages);
+  const earlyBirdOver = Date.now() >= commercialEarlyBirdEndsAt;
   const nonCommercialBooths = boothPackages.filter((item) => !isCommercialBooth(item));
   const choices = [commercialBoothChoice, ...nonCommercialBooths, noBoothChoice].filter(Boolean);
 
@@ -830,8 +869,9 @@ function BoothPathStep({
           <h2>Start with your exhibit footprint</h2>
         </div>
         <p className="deadline-note">
-          Early-bird pricing ends October 5, 2026. Booth sales close October 31,
-          2026, the same day program book ad copy is due.
+          {earlyBirdOver
+            ? "Sales end October 31, 2026, the same day program book ad copy is due."
+            : "Early-bird pricing ends October 5, 2026. Booth sales close October 31, 2026, the same day program book ad copy is due."}
         </p>
       </div>
 
