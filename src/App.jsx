@@ -1380,10 +1380,12 @@ function EmailVerificationPanel({
 function Deadlines() {
   const rows = [
     ["October 5, 2026", "Early-bird booth pricing deadline"],
+    ["October 15, 2026", "Early-bird deadline for Academic / Grad Fair booths"],
     ["October 1, 2026", "Exhibitor service kit distributed"],
     ["October 31, 2026", "Final booth sales close; program book ad copy due"],
     ["November 1, 2026", "Slide reel, signage, and program book sent to printer"],
-    ["November 16-19, 2026", "SWRM 2026 show dates"]
+    ["November 16-19, 2026", "SWRM 2026 show dates"],
+    ["November 17, 2026", "Graduate Recruitment Fair, 11 am to 3 pm"]
   ];
 
   return (
