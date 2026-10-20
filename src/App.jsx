@@ -1999,7 +1999,7 @@ function createCommercialBoothChoice(boothPackages) {
   const fallback = early || regular;
   const earlyPrice = early ? formatCurrency(early.price) : null;
   const regularPrice = regular ? formatCurrency(regular.price) : null;
-  let priceNote = fallback.label;
+  let priceNote = selection.label;
   if (earlyIsCurrent && early?.label) {
     priceNote = early.label;
   }
