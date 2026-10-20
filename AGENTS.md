@@ -16,8 +16,11 @@ a migration was written and applied.
 
 Rule of thumb:
 - **Changing an existing item** (price, name, label, availability, stock cap)
-  → write a migration with `UPDATE packages SET ... WHERE id = '...'`, then
-  run `pnpm db:migrate` against the real deployment before calling it done.
+  → write a migration with `UPDATE packages SET ... WHERE id = '...'`. Once
+  it is merged to `main`, the `Apply D1 migrations` workflow
+  ([.github/workflows/migrate-d1.yml](.github/workflows/migrate-d1.yml))
+  runs `pnpm db:migrate` against production automatically. Check that run
+  passed (or run `pnpm db:migrate` by hand) before calling it done.
 - **Adding a brand-new item** → `INSERT OR IGNORE` works fine on its own,
   since the row doesn't exist yet in the already-seeded table (see
   [migrations/0006_community_donation.sql](migrations/0006_community_donation.sql)).
