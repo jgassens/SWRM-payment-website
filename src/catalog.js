@@ -101,7 +101,7 @@ export const packages = [
     category: "booths",
     name: "Standard commercial booth",
     label: "early bird through Oct 5",
-    price: 1500,
+    price: 1000,
     availability: "deadline priced",
     summary: "Commercial exhibit booth with table, chairs, power, and badges.",
     included: [
@@ -116,7 +116,7 @@ export const packages = [
     category: "booths",
     name: "Standard commercial booth",
     label: "after Oct 5",
-    price: 1700,
+    price: 1000,
     availability: "available until Oct 31",
     summary: "Commercial exhibit booth after the early-bird deadline.",
     included: ["Standard booth package", "Two exhibitor registrations"]
