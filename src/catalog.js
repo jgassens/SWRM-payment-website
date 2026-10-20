@@ -134,8 +134,8 @@ export const packages = [
     id: "booth-academic-grad",
     category: "booths",
     name: "Academic / Grad Fair booth",
-    label: "early bird $350 through Oct 15; $500 after Oct 15",
-    price: 350,
+    label: "after Oct 15",
+    price: 500,
     availability: "available",
     summary:
       "Lower-cost booth package for academic and grad-fair exhibitors. Graduate Recruitment Fair: Monday, November 16 through Wednesday, November 18, 2026.",
@@ -145,8 +145,8 @@ export const packages = [
     id: "booth-nonprofit",
     category: "booths",
     name: "Non-profit booth",
-    label: "early bird $350 through Oct 5; $500 after Oct 5",
-    price: 350,
+    label: "after Oct 5",
+    price: 500,
     availability: "available",
     summary: "Exhibit space for non-profit organizations.",
     included: ["Standard non-profit exhibitor presence"]
