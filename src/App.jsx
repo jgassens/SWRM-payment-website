@@ -1384,7 +1384,7 @@ function Deadlines() {
     ["October 31, 2026", "Final booth sales close; program book ad copy due"],
     ["November 1, 2026", "Slide reel, signage, and program book sent to printer"],
     ["November 16-19, 2026", "SWRM 2026 show dates"],
-    ["November 17, 2026", "Graduate Recruitment Fair, 11 am to 3 pm"]
+    ["November 16-18, 2026", "Graduate Recruitment Fair (Monday through Wednesday)"]
   ];
 
   return (
