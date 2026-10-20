@@ -138,7 +138,7 @@ export const packages = [
     price: 350,
     availability: "available",
     summary:
-      "Lower-cost booth package for academic and grad-fair exhibitors. Graduate Recruitment Fair: Tuesday, November 17, 2026, 11 am to 3 pm.",
+      "Lower-cost booth package for academic and grad-fair exhibitors. Graduate Recruitment Fair: Monday, November 16 through Wednesday, November 18, 2026.",
     included: ["Academic recruiting or outreach presence"]
   },
   {
