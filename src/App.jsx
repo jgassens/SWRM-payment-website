@@ -24,8 +24,10 @@ const commercialBoothEarlyId = "booth-standard-early";
 const commercialBoothRegularId = "booth-standard";
 const commercialBoothIds = new Set([commercialBoothEarlyId, commercialBoothRegularId]);
 const commercialEarlyBirdEndsAt = new Date(2026, 9, 6).getTime();
-// Midnight ending Oct 31, so Oct 31 itself is still a full selling day.
-const boothSalesEndAt = new Date(2026, 10, 1).getTime();
+// November 8, 2026 at 8:00 AM US Central (CST).
+const boothSalesEndAt = Date.UTC(2026, 10, 8, 14);
+const finalAcademicBoothId = "booth-academic-grad";
+const finalBoothOnly = true;
 const menuCategoryIds = ["tiers", "programming", "digital", "meals", "branded", "student"];
 const recommendedPackageIds = [
   "meals-coffee-break",
@@ -190,6 +192,12 @@ function Storefront({ isDemoMode, isEmbedMode }) {
   );
   const [catalogState, setCatalogState] = useState({ status: "loading", message: "" });
   const [cart, setCart] = useState([]);
+  const [salesClosed, setSalesClosed] = useState(() => Date.now() >= boothSalesEndAt);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSalesClosed(true), Math.max(0, boothSalesEndAt - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, []);
   const [vendor, setVendor] = useState(initialVendor);
   const [emailVerification, setEmailVerification] = useState(initialEmailVerification);
   const [checkoutState, setCheckoutState] = useState({ status: "idle", message: "" });
@@ -197,7 +205,8 @@ function Storefront({ isDemoMode, isEmbedMode }) {
     () => !readRegistrationNoticeAcknowledged()
   );
   const catalog = useMemo(
-    () => (isDemoMode ? applyDemoInventory(baseCatalog, demoInventory) : baseCatalog),
+    () => (isDemoMode ? applyDemoInventory(baseCatalog, demoInventory) : baseCatalog)
+      .filter((item) => !finalBoothOnly || item.id === finalAcademicBoothId),
     [baseCatalog, demoInventory, isDemoMode]
   );
 
@@ -273,6 +282,9 @@ function Storefront({ isDemoMode, isEmbedMode }) {
   const cartLines = useMemo(
     () =>
       cart
+        .filter((line) => line.id === finalAcademicBoothId && line.quantity > 0)
+        .slice(0, 1)
+        .map((line) => ({ ...line, quantity: 1 }))
         .map((line) => {
           const item = catalogById.get(line.id);
           return item ? { ...line, item } : null;
@@ -293,11 +305,10 @@ function Storefront({ isDemoMode, isEmbedMode }) {
   const emailVerified = isEmailVerifiedForVendor(vendor.email, emailVerification);
   const total = cartLines.reduce((sum, line) => sum + line.item.price * line.quantity, 0);
   const cartCount = cartLines.reduce((sum, line) => sum + line.quantity, 0);
-  const salesClosed = Date.now() >= boothSalesEndAt;
 
   function addToCart(itemId, options = {}) {
     const item = catalogById.get(itemId);
-    if (!item || isSoldOut(item)) return;
+    if (Date.now() >= boothSalesEndAt || itemId !== finalAcademicBoothId || !item || isSoldOut(item)) return;
 
     setCart((lines) => {
       const nextBoothPath = options.nextBoothPath || selectedBoothPath;
@@ -323,6 +334,7 @@ function Storefront({ isDemoMode, isEmbedMode }) {
   }
 
   function chooseBoothPath(choiceId) {
+    if (choiceId !== finalAcademicBoothId) return;
     setSelectedBoothPath(choiceId);
     if (choiceId === noBoothChoiceId) {
       setCart((lines) => lines.filter((line) => catalogById.get(line.id)?.category !== "booths"));
@@ -368,7 +380,7 @@ function Storefront({ isDemoMode, isEmbedMode }) {
   function updateQuantity(itemId, change) {
     const item = catalogById.get(itemId);
     const maxQuantity = item ? maxQuantityFor(item) : 99;
-    const nextLines = cart
+    const nextLines = cartLines
       .map((line) =>
         line.id === itemId
           ? { ...line, quantity: Math.max(0, Math.min(maxQuantity, line.quantity + change)) }
@@ -382,7 +394,7 @@ function Storefront({ isDemoMode, isEmbedMode }) {
 
     setCart(clampBoothAddOns(nextLines, catalogById, nextBoothPath));
     if (selectedBoothPath === itemId && !nextLines.some((line) => line.id === itemId)) {
-      setSelectedBoothPath(noBoothChoiceId);
+      setSelectedBoothPath(null);
     }
   }
 
@@ -504,6 +516,15 @@ function Storefront({ isDemoMode, isEmbedMode }) {
   }
 
   async function startCheckout() {
+    if (Date.now() >= boothSalesEndAt) {
+      setSalesClosed(true);
+      return;
+    }
+    if (cartLines.length !== 1 || cartLines[0].id !== finalAcademicBoothId ||
+        cartLines[0].quantity !== 1 || isSoldOut(cartLines[0].item)) {
+      setCheckoutState({ status: "error", message: "Select the final Academic / Grad Fair booth before checkout." });
+      return;
+    }
     if (!emailVerified) {
       setCheckoutState({
         status: "error",
@@ -528,7 +549,7 @@ function Storefront({ isDemoMode, isEmbedMode }) {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            cart,
+            cart: cartLines.map(({ id, quantity }) => ({ id, quantity })),
             vendor,
             demoOrderId: demoOrder.id,
             embedMode: isEmbedMode,
@@ -559,7 +580,7 @@ function Storefront({ isDemoMode, isEmbedMode }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          cart,
+          cart: cartLines.map(({ id, quantity }) => ({ id, quantity })),
           vendor,
           embedMode: isEmbedMode,
           emailVerification: checkoutEmailVerificationPayload(emailVerification)
@@ -586,7 +607,7 @@ function Storefront({ isDemoMode, isEmbedMode }) {
       {showRegistrationNotice && !salesClosed ? (
         <RegistrationNoticeDialog onAcknowledge={acknowledgeRegistrationNotice} />
       ) : null}
-      {boothUpgradePrompt.open && !salesClosed ? (
+      {!finalBoothOnly && boothUpgradePrompt.open && !salesClosed ? (
         <BoothUpgradePrompt
           boothItem={catalogById.get(boothUpgradePrompt.boothId)}
           addonPackages={boothAddonPackages.filter((item) => !isSoldOut(item))}
@@ -598,7 +619,7 @@ function Storefront({ isDemoMode, isEmbedMode }) {
       <main className="page" inert={salesClosed}>
         {isEmbedMode ? <EmbedIntroBlock /> : <IntroBlock />}
 
-        <section className="commerce-grid" aria-label="SWRM sponsorship checkout">
+        <section className="commerce-grid" aria-label="SWRM Academic / Grad Fair booth checkout">
           <div className="catalog-column">
             <BoothPathStep
               boothPackages={boothPackages}
@@ -611,7 +632,7 @@ function Storefront({ isDemoMode, isEmbedMode }) {
               onAddBoothAddon={addToCart}
             />
 
-            <section
+            {!finalBoothOnly ? <section
               id="sponsorship-menu"
               className={hasBoothPath ? "addon-menu" : "addon-menu locked"}
               aria-label="Sponsorship add-on menu"
@@ -661,7 +682,7 @@ function Storefront({ isDemoMode, isEmbedMode }) {
                   />
                 ))}
               </div>
-            </section>
+            </section> : null}
           </div>
 
           <CartPanel
@@ -754,7 +775,7 @@ function SalesClosedDialog() {
         <p className="section-label">SWRM 2026</p>
         <h2 id="sales-closed-title">Sales have ended. Enjoy the Conference</h2>
         <p className="registration-notice-copy">
-          Booth and sponsorship sales closed on October 31, 2026. We look forward to
+          Booth and sponsorship sales have closed. We look forward to
           seeing you at the Hilton Fort Worth, November 16-19.
         </p>
       </section>
@@ -774,7 +795,7 @@ function ConferenceHeader({ cartCount, admin = false, isDemoMode = false }) {
       <div className="masthead">
         <nav className="masthead-inner" aria-label="Primary">
           <a href={admin ? appBase : packageHref} className="menu-link">
-            {admin ? "Storefront" : "Packages"}
+            {admin ? "Storefront" : "Final booth"}
           </a>
           <img
             className="conference-logo"
@@ -796,11 +817,10 @@ function IntroBlock() {
       <div className="accent-rule" aria-hidden="true" />
       <div className="intro-copy">
         <p className="section-label">American Chemical Society Southwest Regional Meeting</p>
-        <h1>SWRM 2026 Sponsorship Portal</h1>
+        <h1>Buy the final Academic / Grad Fair booth</h1>
         <p>
-          Start with your exhibit footprint, then add high-visibility sponsorship moments
-          that support ACS programming and keep your brand in front of regional chemists
-          throughout the November 16-19 meeting in downtown Fort Worth.
+          Reserve the final Academic / Grad Fair booth for $500 at SWRM 2026,
+          November 16-19 at the Hilton Fort Worth.
         </p>
       </div>
       <div className="intro-facts">
@@ -816,10 +836,10 @@ function EmbedIntroBlock() {
   return (
     <section className="embed-intro-panel">
       <p className="section-label">Exposition and Grad Fair</p>
-      <h1>Reserve booth and sponsorship space</h1>
+      <h1>Buy the final Academic / Grad Fair booth</h1>
       <p>
-        Start with an exhibit or grad-fair footprint, then add optional sponsorship visibility
-        across the SWRM 2026 meeting.
+        Reserve the final Academic / Grad Fair booth for $500 at SWRM 2026,
+        November 16-19 at the Hilton Fort Worth.
       </p>
     </section>
   );
@@ -857,21 +877,19 @@ function BoothPathStep({
     ]
   };
   const commercialBoothChoice = createCommercialBoothChoice(boothPackages);
-  const earlyBirdOver = Date.now() >= commercialEarlyBirdEndsAt;
   const nonCommercialBooths = boothPackages.filter((item) => !isCommercialBooth(item));
-  const choices = [commercialBoothChoice, ...nonCommercialBooths, noBoothChoice].filter(Boolean);
+  const choices = [commercialBoothChoice, ...nonCommercialBooths, noBoothChoice]
+    .filter((item) => item && (!finalBoothOnly || item.id === finalAcademicBoothId));
 
   return (
-    <section className="booth-step" aria-label="Choose a booth path">
+    <section id="packages" className="booth-step" aria-label="Choose the final Academic / Grad Fair booth">
       <div className="section-heading">
         <div>
-          <p className="section-label">Step 1: booth path</p>
-          <h2>Start with your exhibit footprint</h2>
+          <p className="section-label">Academic / Grad Fair booth</p>
+          <h2>Reserve the final booth</h2>
         </div>
         <p className="deadline-note">
-          {earlyBirdOver
-            ? "Sales end October 31, 2026, the same day program book ad copy is due."
-            : "Early-bird pricing ends October 5, 2026. Booth sales close October 31, 2026, the same day program book ad copy is due."}
+          One Academic / Grad Fair booth remains. Sales close Sunday, November 8, 2026 at 8:00 AM Central.
         </p>
       </div>
 
@@ -914,7 +932,7 @@ function BoothPathStep({
         })}
       </div>
 
-      {boothAddonPackages.length > 0 ? (
+      {!finalBoothOnly && boothAddonPackages.length > 0 ? (
         <div className="booth-addon-panel" aria-label="Optional booth add-ons">
           <div>
             <p className="section-label">Optional booth upgrade</p>
@@ -1122,7 +1140,10 @@ function CartPanel({
   const cartItemCount = cartLines.reduce((sum, line) => sum + line.quantity, 0);
   const canCheckout =
     hasBoothPath &&
-    cartLines.length > 0 &&
+    cartLines.length === 1 &&
+    cartLines[0].id === finalAcademicBoothId &&
+    cartLines[0].quantity === 1 &&
+    !isSoldOut(cartLines[0].item) &&
     requiredVendorFields.every((field) => vendor[field].trim()) &&
     emailVerified;
 
@@ -1210,11 +1231,9 @@ function CartPanel({
       </div>
 
       <div className="booth-summary">
-        <span>Booth path</span>
+        <span>Booth</span>
         <strong>
-          {selectedBoothPath === noBoothChoiceId
-            ? "No booth, sponsorship add-ons only"
-            : selectedBoothItem?.name || "Choose booth path first"}
+          {selectedBoothItem?.name || "Select the Academic / Grad Fair booth"}
         </strong>
       </div>
 
@@ -1227,7 +1246,7 @@ function CartPanel({
         </div>
 
         {cartLines.length === 0 ? (
-          <p className="empty-cart">Selected sponsorship items will appear here.</p>
+          <p className="empty-cart">Your Academic / Grad Fair booth will appear here.</p>
         ) : (
           <div className="cart-lines">
             {cartLines.map((line) => (
@@ -1248,6 +1267,7 @@ function CartPanel({
                   <button
                     type="button"
                     data-testid={`increase-${line.id}`}
+                    disabled={line.quantity >= 1 || isSoldOut(line.item)}
                     onClick={() => onQuantityChange(line.id, 1)}
                   >
                     +
@@ -1295,7 +1315,7 @@ function CartPanel({
           {checkoutState.message}
         </p>
       ) : !hasBoothPath ? (
-        <p className="checkout-note">Choose a booth path before checkout opens.</p>
+        <p className="checkout-note">Select the Academic / Grad Fair booth before checkout opens.</p>
       ) : !emailVerified ? (
         <p className="checkout-note">Verify the vendor email address before checkout opens.</p>
       ) : isDemoMode ? (
@@ -1381,8 +1401,9 @@ function Deadlines() {
   const rows = [
     ["October 5, 2026", "Early-bird deadline for commercial and non-profit booths"],
     ["October 15, 2026", "Early-bird deadline for Academic / Grad Fair booths"],
-    ["October 31, 2026", "Final booth sales close; program book ad copy due"],
+    ["October 31, 2026", "Original booth sales close; program book ad copy due"],
     ["November 1, 2026", "Slide reel, signage, and program book sent to printer"],
+    ["November 8, 2026", "Final Academic / Grad Fair booth sales close (8:00 AM Central)"],
     ["November 16-19, 2026", "SWRM 2026 show dates"],
     ["November 16-18, 2026", "Graduate Recruitment Fair (Monday through Wednesday)"]
   ];
@@ -1940,7 +1961,8 @@ function clearDemoSandbox() {
 }
 
 function maxQuantityFor(item) {
-  return Number.isInteger(item.stockRemaining) ? Math.max(0, item.stockRemaining) : 99;
+  const max = Number.isInteger(item.stockRemaining) ? Math.max(0, item.stockRemaining) : 99;
+  return finalBoothOnly && item.id === finalAcademicBoothId ? Math.min(1, max) : max;
 }
 
 function maxQuantityForCartItem(item, lines, boothPath) {

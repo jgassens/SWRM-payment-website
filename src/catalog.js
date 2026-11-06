@@ -134,9 +134,11 @@ export const packages = [
     id: "booth-academic-grad",
     category: "booths",
     name: "Academic / Grad Fair booth",
-    label: "after Oct 15",
+    label: "final booth",
     price: 500,
-    availability: "available",
+    availability: "until Nov 8, 8:00 AM CT",
+    stockTotal: 1,
+    stockRemaining: 1,
     summary:
       "Lower-cost booth package for academic and grad-fair exhibitors. Graduate Recruitment Fair: Monday, November 16 through Wednesday, November 18, 2026.",
     included: ["Academic recruiting or outreach presence"]
@@ -471,8 +473,8 @@ export function withInventoryDefaults(item, index = 0) {
   return {
     ...item,
     priceCents: item.price * 100,
-    stockTotal: stock,
-    stockRemaining: stock,
+    stockTotal: item.stockTotal ?? stock,
+    stockRemaining: item.stockRemaining ?? stock,
     active: true,
     sortOrder: index
   };

@@ -20,6 +20,9 @@ const liveCheckoutExpirySeconds = 31 * 60;
 const boothAddonIds = new Set(["booth-premium-corner"]);
 const boothUpgradeRequiresBoothMessage = "Premium / corner upgrade requires a booth selection.";
 const earlyBirdBoothId = "booth-standard-early";
+// November 8, 2026 at 8:00 AM US Central (CST).
+const boothSalesEndAt = Date.UTC(2026, 10, 8, 14);
+const finalAcademicBoothId = "booth-academic-grad";
 // Oct 6 2026 00:00 UTC: early-bird commercial booth pricing is valid through Oct 5.
 const commercialEarlyBirdEndsAt = Date.UTC(2026, 9, 6);
 const earlyBirdEndedMessage =
@@ -734,10 +737,14 @@ function validateCartDependencies(items) {
   return hasBoothUpgrade && !hasPhysicalBooth ? boothUpgradeRequiresBoothMessage : "";
 }
 
-// The storefront hides the early-bird booth after Oct 5 using the browser clock, so a
-// crafted request could still buy it at the discounted price. Enforce the deadline on the
-// server, which is the only clock that matters for pricing.
+// Enforce the final booth restriction and deadline on the server as well as in the storefront.
 function validateCartAvailability(items) {
+  if (Date.now() >= boothSalesEndAt) {
+    return "Sales have closed.";
+  }
+  if (items.length !== 1 || items[0].item.id !== finalAcademicBoothId || items[0].quantity !== 1) {
+    return "Only one Academic / Grad Fair booth may be purchased, with no other items.";
+  }
   const hasEarlyBirdBooth = items.some(({ item }) => item.id === earlyBirdBoothId);
   if (hasEarlyBirdBooth && Date.now() >= commercialEarlyBirdEndsAt) {
     return earlyBirdEndedMessage;
